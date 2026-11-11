@@ -1,0 +1,98 @@
+# FTune macOS — BUILD & SIGNING (verified on a real Mac)
+
+**Verified 2026-09-30** on Apple Silicon / macOS 26.5 with node 25, npm 11, electron 44.3,
+electron-builder 26.17 (esbuild 0.28, vite 8.3). Everything below is what actually happened.
+
+## 1. What was actually built (no credentials — unsigned)
+
+```bash
+npm ci                 # fresh install (also: npm audit → 0 vulnerabilities)
+npm test               # 194/194
+npm run dist           # builds renderer + main, then electron-builder for BOTH arch targets
+```
+
+Artifacts produced and verified (`release/`):
+
+| File | Size | Contents |
+|---|---|---|
+| `FTune-1.0.1-arm64.dmg` | 135 MB | arm64 app (verified: `lipo -archs release/mac-arm64/FTune.app/Contents/MacOS/FTune` → `arm64`) |
+| `FTune-1.0.1-arm64.zip` | 131 MB | same, zipped |
+| `FTune-1.0.1-x64.dmg` | 140 MB | Intel app (`lipo` → `x86_64`) |
+| `FTune-1.0.1-x64.zip` | 135 MB | same, zipped |
+
+Bundle facts checked on the installed copy: `CFBundleIdentifier com.ftune.music`,
+`CFBundleShortVersionString 1.0.1`, `LSMinimumSystemVersion 11.0.0`,
+`NSHighResolutionCapable true`, `CFBundleURLSchemes ["ftune"]`, category
+`public.app-category.music`, `Resources/icon.icns` present.
+
+## 2. Signing/notarization — honest status
+
+- electron-builder: *"skipped macOS application code signing — cannot find valid Developer ID
+  Application identity … 0 valid identities found."*
+- `codesign -dv /Applications/FTune.app` → `flags=0x20002(adhoc,linker-signed)` — i.e. **NOT
+  signed** with any developer identity.
+- `spctl -a -t exec /Applications/FTune.app` → rejected ("code has no resources but signature
+  indicates they must be present").
+- **Not notarized.** Nothing was fabricated; the artifacts work locally because files created
+  locally carry no quarantine attribute.
+
+**Update (2026-10-29):** that unsealed state is exactly what users downloading v1.0.0/v1.0.1 hit
+as "FTune is damaged and can't be opened. You should move it to the Trash." (arm64 binaries
+linker-signed, x64 binaries unsigned, no `_CodeSignature/CodeResources`). The build now ad-hoc
+signs the whole bundle in an `afterPack` hook (`scripts/after-pack.cjs`, hardened runtime off —
+an ad-hoc signature has no Team ID, so library validation would block Electron Framework), and
+the macOS CI job runs `codesign --verify --deep --strict` on every shipped app. Downloaded copies
+then get the ordinary "allow once" Gatekeeper prompt instead of the dead end. The same
+update raised `LSMinimumSystemVersion` from 11.0.0 to 13.0: Electron 44's binaries are built for
+macOS 13+ (`LC_BUILD_VERSION minos 13.0`), so 11.0.0 let macOS 11/12 install an app that could
+never launch; CI now fails a build whose declared minimum is below the binaries' floor.
+
+To produce a signed, notarized release (from DISTRIBUTION.md, unchanged):
+
+```bash
+export CSC_LINK=/path/to/DeveloperIDApplication.p12
+export CSC_NAME="Developer ID Application: Your Name (TEAMID)"
+export APPLE_API_KEY_ID=XXXXXXXXXX
+export APPLE_API_ISSUER=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+export APPLE_API_KEY_PATH=/path/to/AuthKey_XXXXXXXXXX.p8
+
+npm run dist    # signs, notarizes, staples when the env vars are present
+
+# then verify:
+spctl -a -t exec -vv release/mac-arm64/FTune.app
+xcrun stapler validate release/FTune-1.0.1-arm64.dmg
+codesign --verify --deep --strict release/mac-arm64/FTune.app
+```
+
+Hardened Runtime is already configured (`hardenedRuntime: true`) with the minimal entitlements
+in `build/entitlements.mac.plist` (JIT + unsigned executable memory for V8; nothing else).
+
+## 3. Install & first launch (verified)
+
+```bash
+hdiutil attach release/FTune-1.0.1-arm64.dmg -nobrowse
+ditto "/Volumes/FTune 1.0.1/FTune.app" /Applications/FTune.app
+hdiutil detach "/Volumes/FTune 1.0.1"
+open /Applications/FTune.app
+```
+
+Observed: app boots to onboarding/shell; creates `~/Library/Application Support/FTune/data/`
+with the expected stores; streams real audio; quits cleanly; player state survives.
+
+⚠️ On a machine where the DMG arrived via the internet (quarantine attribute present) the
+un-notarized build triggers Gatekeeper once — macOS 15+: System Settings → Privacy & Security →
+Open Anyway; macOS 13–14: right-click → Open. This disappears once §2 is done.
+
+## 4. Deep-link registration (verified)
+
+LaunchServices shows `ftune:` claimed by `com.ftune.music`; `open location "ftune://…"`
+routes to the installed bundle (multiple copies of the same bundle id are reconciled by
+LaunchServices automatically). Handler validation: malformed URLs are ignored, valid-shaped
+callbacks without a pending OAuth flow are parked (max 3) — never executed blindly.
+
+## 5. Toolchain refresh note (this audit)
+
+Fresh `npm install` surfaced new advisories in the build toolchain (all dev-time; none ship in
+the bundle). Fixed by upgrading: `electron-builder@^26.17.0`, `esbuild@^0.28.2`,
+`vite@^8.3.1`, `@vitejs/plugin-react@^6.1.1` → `npm audit`: **0 vulnerabilities**; typecheck,
+194/194 tests, build and smoke all re-run green afterwards.

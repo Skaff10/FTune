@@ -1,0 +1,158 @@
+/**
+ * Pure transforms for the backup document (export/import) — kept free of
+ * Electron imports so the round-trip is unit-testable directly, like
+ * sync-merge.ts and audio-format.ts (see tests/backup-roundtrip.test.mjs).
+ *
+ * The renderer's stores are persisted as zustand envelopes { state, version }
+ * (see src/lib/persist.ts). The backup document, however, carries PORTABLE
+ * shapes: settings as a plain key/value map and recent searches as a plain
+ * string array. Reading the envelope's top level instead of its `.state` is
+ * exactly what used to silently drop settings and recent searches from every
+ * backup; these helpers unwrap on the way out and re-wrap on the way in.
+ * Library and player stores already round-trip as envelopes untouched.
+ */
+
+import { MATCH_LANGUAGES } from "./track-match";
+
+/** Device-local settings a backup must never carry or overwrite. */
+export const DEVICE_LOCAL_SETTINGS = new Set(["downloadDir", "localMusicFolder", "audioSinkId", "lyricsOffset", "closeToTray"]);
+
+/** Known settings keys — junk in, junk never out. */
+export const SETTINGS_KEYS = new Set([
+  "downloadDir",
+  "downloadQuality",
+  "exportDownloads",
+  "streamingQuality",
+  "crossfadeSeconds",
+  "smartFade",
+  "skipSilence",
+  "autoplay",
+  "playbackSpeed",
+  "reduceAnimation",
+  "reduceDynamicBlur",
+  "liquidGlass",
+  "fullBleedArtwork",
+  "legacyMeshGradient",
+  "animatedCanvas",
+  "syncedLyrics",
+  "blurUnfocusedLyrics",
+  "romanizeLyrics",
+  "localMusicFolder",
+  "filterNonMusicAudio",
+  "dontRepeatSuggestions",
+  "hideVolumeBar",
+  "closeToTray",
+  "eqEnabled",
+  "eqGains",
+  "eqPresets",
+  "eqAutoHeadroom",
+  "audioSinkId",
+  "lyricsOffset",
+  "loudnessLevel",
+  "matchLanguage",
+]);
+
+/** The import language preference: "" (any) or one of the matcher's languages. */
+export function matchLanguageOk(v: unknown): boolean {
+  return v === "" || (MATCH_LANGUAGES as readonly unknown[]).includes(v);
+}
+
+/** Equalizer band gains: one dB value per band (EQ_BANDS in src/lib/audio.ts has 10), within ±12. */
+export function eqGainsOk(v: unknown): boolean {
+  return Array.isArray(v) && v.length === 10 && v.every((g) => typeof g === "number" && Number.isFinite(g) && g >= -12 && g <= 12);
+}
+
+/** Saved EQ presets: at most 20, each a short non-empty name and a valid gain curve. */
+export function eqPresetsOk(v: unknown): boolean {
+  return (
+    Array.isArray(v) &&
+    v.length <= 20 &&
+    v.every(
+      (p) =>
+        !!p && typeof p === "object" && typeof p.name === "string" && p.name.trim().length > 0 && p.name.length <= 40 && eqGainsOk(p.gains)
+    )
+  );
+}
+
+/** Inner state of a persisted store: unwraps the envelope, or passes a bare map through. */
+function stateOf(payload: unknown): Record<string, unknown> {
+  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+    const env = payload as { state?: unknown };
+    if (env.state && typeof env.state === "object" && !Array.isArray(env.state)) {
+      return env.state as Record<string, unknown>;
+    }
+    return payload as Record<string, unknown>;
+  }
+  return {};
+}
+
+/** The zustand envelope the renderer's persist middleware reads at hydration. */
+export function envelope(state: Record<string, unknown>): { state: Record<string, unknown>; version: number } {
+  return { state, version: 0 };
+}
+
+/**
+ * Backup document → persisted envelope for a whole store (library, player).
+ * These stores round-trip as envelopes, and writing anything else verbatim
+ * used to poison the store the renderer hydrates from (an array or a bare
+ * map without `state` breaks every subsequent write). Reject malformed
+ * sections with the same user-facing error the document checks use.
+ */
+export function storeEnvelopeFromBackup(raw: unknown, name: string): { state: Record<string, unknown>; version: number } {
+  const bad = (): Error => new Error(`That doesn't look like an FTune backup (malformed ${name} section)`);
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw bad();
+  const env = raw as { state?: unknown; version?: unknown };
+  if (!env.state || typeof env.state !== "object" || Array.isArray(env.state)) throw bad();
+  if (typeof env.version !== "number" || !Number.isFinite(env.version)) throw bad();
+  return { state: env.state as Record<string, unknown>, version: env.version };
+}
+
+/** Store → backup document: whitelisted settings keys, device-local paths dropped. */
+export function settingsToBackup(envelopeOrState: unknown): Record<string, unknown> {
+  const state = stateOf(envelopeOrState);
+  const out: Record<string, unknown> = {};
+  for (const k of SETTINGS_KEYS) {
+    if (DEVICE_LOCAL_SETTINGS.has(k)) continue;
+    if (k in state) out[k] = state[k];
+  }
+  return out;
+}
+
+/**
+ * Backup document → settings state to write: whitelist incoming keys, keep
+ * THIS machine's device-local ones (taken from the current store).
+ */
+export function settingsFromBackup(incoming: unknown, currentEnvelope: unknown): Record<string, unknown> {
+  const inc = stateOf(incoming);
+  const cur = stateOf(currentEnvelope);
+  const next: Record<string, unknown> = {};
+  for (const k of SETTINGS_KEYS) {
+    if (DEVICE_LOCAL_SETTINGS.has(k)) {
+      if (k in cur) next[k] = cur[k];
+      continue;
+    }
+    // A malformed gains list would break the equalizer and the Settings page.
+    if (k in inc && (k !== "eqGains" || eqGainsOk(inc[k])) && (k !== "eqPresets" || eqPresetsOk(inc[k])) && (k !== "loudnessLevel" || ["off", "quiet", "normal", "loud"].includes(inc[k] as string)) && (k !== "matchLanguage" || matchLanguageOk(inc[k]))) next[k] = inc[k];
+  }
+  return next;
+}
+
+/** Store → backup document: recent searches as a plain string array. */
+export function searchesToBackup(envelopeOrState: unknown): string[] {
+  const searches = stateOf(envelopeOrState).searches;
+  if (!Array.isArray(searches)) return [];
+  return searches
+    .filter((q): q is string => typeof q === "string" && q.trim().length > 0)
+    .slice(0, 50);
+}
+
+/**
+ * Backup document → recent-searches state to write. Accepts the plain array
+ * (current format) and the raw zustand envelope (what older exports actually
+ * captured — previously it was silently skipped on import).
+ */
+export function searchesFromBackup(raw: unknown): string[] {
+  const searches = Array.isArray(raw) ? raw : stateOf(raw).searches;
+  if (!Array.isArray(searches)) return [];
+  return searches.filter((q): q is string => typeof q === "string").slice(0, 50);
+}

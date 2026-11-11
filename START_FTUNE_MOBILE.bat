@@ -1,10 +1,9 @@
 @echo off
-title ByTune Mobile Controller
+title FTune Mobile Controller
 echo ========================================================
-echo   Starting ByTune Mobile Controller (Expo)
+echo   Starting FTune Mobile Controller (Expo)
 echo   Scan the QR code with Expo Go on your phone
 echo ========================================================
-cd /d "D:\Motio\bytune-mobile"
+cd /d "%~dp0FTune-mobile"
 npx expo start -c
 pause
-

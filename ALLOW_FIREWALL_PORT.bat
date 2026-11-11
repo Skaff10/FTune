@@ -1,5 +1,5 @@
 @echo off
-title Allow ByTune Firewall Port 8765
+title Allow FTune Firewall Port 8765
 echo ========================================================
 echo   Configuring Windows Defender Firewall for Port 8765
 echo ========================================================
@@ -13,8 +13,9 @@ if %errorLevel% neq 0 (
 )
 
 echo [firewall] Adding inbound allow rule for Port 8765 on all network profiles...
+netsh advfirewall firewall delete rule name="FTune Remote Host" >nul 2>&1
 netsh advfirewall firewall delete rule name="ByTune Remote Host" >nul 2>&1
-netsh advfirewall firewall add rule name="ByTune Remote Host" dir=in action=allow protocol=TCP localport=8765 profile=any
+netsh advfirewall firewall add rule name="FTune Remote Host" dir=in action=allow protocol=TCP localport=8765 profile=any
 
 echo.
 echo ========================================================
@@ -23,4 +24,3 @@ echo   Your phone on Wi-Fi can now connect to your PC.
 echo ========================================================
 echo.
 pause
-

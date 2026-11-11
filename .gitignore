@@ -1,0 +1,12 @@
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Dependencies & Build outputs
+node_modules/
+dist/
+dist-electron/
+release/
+*.log
+.DS_Store

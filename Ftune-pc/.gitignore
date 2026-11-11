@@ -1,0 +1,61 @@
+# Environment files
+.env
+.env.*
+!.env.example
+
+node_modules/
+dist/
+dist-electron/
+release/
+*.log
+.DS_Store
+.ftune-install
+.bytune-install
+.test-build
+
+# User data (profiles, auth) — never commit
+data/
+
+# Phase-based dev/QA scratch (build/test runs)
+phase*-results.json
+phase*-baseline.json
+phase*-longrun.json
+phase*-rect-results.json
+
+# Root-level probe / scratch scripts and data
+/.check-urls.sh
+/.dim-probe.cjs
+/.lufs-probe.cjs
+/.more-ids.cjs
+/.multi-test.cjs
+/.multi-test2.cjs
+/.raw-thumb-probe.cjs
+/.rewrite-test.cjs
+/.search-test-bundle.cjs
+/.thumb-probe.cjs
+/.thumbs-all.txt
+/.thumbs-results.txt
+/.thumbs-up.txt
+/.vid-probe.cjs
+/.vid-thumb-ids.cjs
+/.ytm.cjs
+/_fix_integrations.py
+/_lp_probe.mjs
+/_patch_pin.py
+/_qa1.py
+
+# Phase-based probe scripts under scripts/
+/scripts/phase*-*.cjs
+/scripts/phase*-*.mjs
+/scripts/.ftune-install
+.bytune-install
+.test-fixtures
+
+# ZCode agent scratch (local plans/temp scripts, never shared)
+/.zcode/
+/.zcodeignore
+
+# Per-run temp dir for tests (scripts/with-test-temp.mjs)
+.test-tmp/
+
+/.agents/

@@ -1,0 +1,178 @@
+{
+  "name": "ftune-desktop",
+  "productName": "FTune",
+  "private": true,
+  "version": "1.1.1",
+  "author": "FTune",
+  "description": "FTune — desktop music player for Windows & macOS",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "concurrently -k -s first \"npm:dev:renderer\" \"npm:dev:app\"",
+    "dev:renderer": "vite",
+    "dev:app": "wait-on tcp:127.0.0.1:5173 && npm run build:electron && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 node scripts/launch-electron.mjs",
+    "build:electron": "esbuild electron/main.ts electron/preload.ts --bundle --platform=node --format=cjs --external:electron --external:jsdom --external:undici --outdir=dist-electron && esbuild electron/po-page.ts --bundle --format=iife --outfile=dist-electron/po-page.js && node -e \"require('fs').copyFileSync('electron/po.html','dist-electron/po.html')\" && node -e \"require('fs').cpSync('electron/assets','dist-electron/assets',{recursive:true})\" && node scripts/build-media-helper.mjs",
+    "icons:thumbar": "node scripts/gen-thumbar-icons.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "esbuild src/lib/account-validators.ts --bundle --format=esm --outfile=.test-build/account-validators.mjs && esbuild src/lib/config.ts --bundle --format=esm --outfile=.test-build/config.mjs && esbuild electron/sync-merge.ts --bundle --format=esm --outfile=.test-build/sync-merge.mjs && esbuild electron/audio-format.ts --bundle --format=esm --outfile=.test-build/audio-format.mjs && esbuild electron/backup-transfer.ts --bundle --format=esm --outfile=.test-build/backup-transfer.mjs && esbuild electron/market.ts --bundle --format=esm --outfile=.test-build/market.mjs && esbuild electron/ytm.ts --bundle --format=esm --outfile=.test-build/ytm.mjs && esbuild electron/local-paths.ts --bundle --format=esm --outfile=.test-build/local-paths.mjs && esbuild src/lib/deletion-sync.ts --bundle --format=esm --outfile=.test-build/deletion-sync.mjs && esbuild src/lib/download-reconcile.ts --bundle --format=esm --outfile=.test-build/download-reconcile.mjs && esbuild electron/mac-menu.ts --bundle --format=esm --outfile=.test-build/mac-menu.mjs && esbuild electron/close-to-tray.ts --bundle --format=esm --outfile=.test-build/close-to-tray.mjs && esbuild electron/window-state.ts --bundle --format=esm --outfile=.test-build/window-state.mjs && esbuild src/lib/media-key-tap.ts --bundle --format=esm --outfile=.test-build/media-key-tap.mjs && esbuild src/lib/audio-output.ts --bundle --format=esm --outfile=.test-build/audio-output.mjs && esbuild src/lib/radio-filter.ts --bundle --format=esm --outfile=.test-build/radio-filter.mjs && esbuild src/lib/lyricsLines.ts --bundle --format=esm --outfile=.test-build/lyrics-lines.mjs && esbuild src/lib/replayFormat.ts --bundle --format=esm --outfile=.test-build/replay-format.mjs && esbuild src/lib/playlistShare.ts --bundle --format=esm --outfile=.test-build/playlist-share.mjs && esbuild src/lib/format.ts --bundle --format=esm --outfile=.test-build/format.mjs && esbuild src/lib/romanize.ts --bundle --format=esm --outfile=.test-build/romanize.mjs && esbuild src/lib/analysis.ts --bundle --format=esm --outfile=.test-build/analysis.mjs && esbuild electron/lyrics.ts --bundle --format=esm --platform=node --external:jsdom --outfile=.test-build/lyrics.mjs && esbuild src/lib/swipeNav.ts --bundle --format=esm --outfile=.test-build/swipeNav.mjs && esbuild src/lib/moodMix.ts --bundle --format=esm --outfile=.test-build/moodMix.mjs && esbuild electron/m4a-tags.ts --bundle --format=esm --platform=node --outfile=.test-build/m4a-tags.mjs && esbuild electron/audio-types.ts --bundle --format=esm --platform=node --outfile=.test-build/audio-types.mjs && esbuild electron/track-match.ts --bundle --format=esm --platform=node --outfile=.test-build/track-match.mjs && esbuild electron/spotify-web.ts --bundle --format=esm --platform=node --outfile=.test-build/spotify-web.mjs && node scripts/with-test-temp.mjs node --test tests/*.test.mjs",
+    "build": "npm run typecheck && npm run build:electron && vite build",
+    "start": "node scripts/launch-electron.mjs",
+    "smoke": "node scripts/with-test-temp.mjs node scripts/smoke.mjs",
+    "dist": "npm run build && electron-builder",
+    "dist:win": "npm run build && electron-builder --win nsis",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:arm64": "npm run build && electron-builder --mac --arm64",
+    "dist:x64": "npm run build && electron-builder --mac --x64",
+    "icon": "node scripts/gen-icon.mjs",
+    "qa:local": "node scripts/local-lib-qa.mjs"
+  },
+  "build": {
+    "appId": "com.ftune.music",
+    "productName": "FTune",
+    "directories": {
+      "output": "release"
+    },
+    "afterPack": "scripts/after-pack.cjs",
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "!dist-electron/FTuneMedia.exe",
+      "build/icon.png",
+      "build/icon.ico"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.ico",
+      "artifactName": "FTune-Setup.${ext}",
+      "extraResources": [
+        {
+          "from": "dist-electron/FTuneMedia.exe",
+          "to": "FTuneMedia.exe"
+        }
+      ]
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.icns",
+      "category": "public.app-category.music",
+      "artifactName": "FTune-${version}-${arch}.${ext}",
+      "darkModeSupport": true,
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "LSMinimumSystemVersion": "13.0",
+        "NSHighResolutionCapable": true,
+        "NSPrincipalClass": "NSApplication",
+        "NSSupportsAutomaticGraphicsSwitching": true,
+        "CFBundleDisplayName": "FTune",
+        "CFBundleDocumentTypes": [
+          {
+            "CFBundleTypeName": "Audio file",
+            "CFBundleTypeRole": "Viewer",
+            "LSHandlerRank": "Alternate",
+            "CFBundleTypeExtensions": [
+              "mp3",
+              "m4a",
+              "aac",
+              "flac",
+              "ogg",
+              "oga",
+              "opus",
+              "wav",
+              "webm"
+            ]
+          }
+        ]
+      }
+    },
+    "dmg": {
+      "title": "FTune ${version}",
+      "artifactName": "FTune-${version}-${arch}.${ext}",
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "protocols": [
+      {
+        "name": "FTune",
+        "schemes": [
+          "ftune",
+          "bytune"
+        ]
+      }
+    ],
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false,
+      "shortcutName": "FTune",
+      "include": "build/installer.nsh"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Skaff10",
+        "repo": "FTune"
+      }
+    ]
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.10",
+    "@resvg/resvg-js": "^2.6.2",
+    "@types/jsdom": "^30.0.0",
+    "@types/node": "^22.10.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "concurrently": "^9.1.0",
+    "cross-env": "^7.0.3",
+    "electron": "^44.3.0",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.24.0",
+    "lucide-react": "^0.468.0",
+    "postcss": "^8.4.49",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11",
+    "wait-on": "^8.0.1",
+    "youtubei.js": "^18.0.0",
+    "zustand": "^5.0.2"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.116.0",
+    "@types/ws": "^8.18.2",
+    "bgutils-js": "^4.0.3",
+    "electron-updater": "^6.8.11",
+    "jsdom": "^29.1.1",
+    "music-metadata": "^11.15.0",
+    "ws": "^8.22.2"
+  }
+}

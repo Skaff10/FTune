@@ -1,0 +1,31 @@
+{
+  "name": "ftune-mobile",
+  "version": "1.0.0",
+  "main": "index.ts",
+  "dependencies": {
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "@react-native-community/slider": "5.2.1",
+    "expo": "~58.0.23",
+    "expo-audio": "~58.0.12",
+    "expo-file-system": "~58.0.13",
+    "expo-status-bar": "~58.0.4",
+    "lucide-react-native": "^1.71.0",
+    "react": "19.3.0",
+    "react-native": "0.88.1",
+    "react-native-safe-area-context": "~5.11.1",
+    "react-native-svg": "15.16.0",
+    "react-native-webview": "14.0.1",
+    "react-native-youtube-iframe": "^2.4.1"
+  },
+  "devDependencies": {
+    "@types/react": "~19.3.0",
+    "typescript": "~6.0.3"
+  },
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web"
+  },
+  "private": true
+}
