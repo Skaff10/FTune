@@ -28,8 +28,8 @@ import {
   ListMusic,
   ChevronRight,
   Trash2,
-  RefreshCw,
-  ExternalLink,
+  SlidersHorizontal,
+  Link2,
 } from "lucide-react-native";
 import { Colors } from "./src/theme/colors";
 import type {
@@ -38,7 +38,6 @@ import type {
   RemotePlayerState,
   SearchFilter,
   Track,
-  SpotifyPlaylistInfo,
   SpotifyStatus,
 } from "./src/types";
 import {
@@ -56,7 +55,7 @@ import {
   subscribeDownloads,
   deleteDownloadedTrack,
 } from "./src/services/downloadManager";
-import { spotifyService, LIKED_ID, LIKED_SLEEVE } from "./src/services/spotify";
+import { spotifyService } from "./src/services/spotify";
 import { SongRow } from "./src/components/SongRow";
 import { MiniPlayer } from "./src/components/MiniPlayer";
 import { FullPlayer } from "./src/components/FullPlayer";
@@ -65,10 +64,8 @@ import { BottomNavBar, type TabKey } from "./src/components/BottomNavBar";
 import { QuickTile } from "./src/components/QuickTile";
 import { ShelfCard } from "./src/components/ShelfCard";
 import { PlaylistDetailView } from "./src/components/PlaylistDetailView";
-import { SpotifyMatchedView } from "./src/components/SpotifyMatchedView";
 import { SpotifyLoginModal } from "./src/components/SpotifyLoginModal";
 import { SpotifyIcon, SPOTIFY_GREEN } from "./src/components/SpotifyIcon";
-import { SpringTouchable, AmbientGlow } from "./src/components/AnimatedComponents";
 import { FTuneLogo } from "./src/components/FTuneLogo";
 import {
   getOfflineFavorites,
@@ -140,26 +137,30 @@ function MainContent() {
   const [connected, setConnected] = useState(false);
   const [hostname, setHostname] = useState("FTune PC");
 
-  // Playback Target: "phone" (native expo-av audio) or "pc" (controls FTune Desktop)
+  // Playback Target: "phone" (native audio) or "pc" (controls FTune Desktop)
   const [playbackTarget, setPlaybackTarget] = useState<"phone" | "pc">("phone");
 
   // Offline Favorites & Downloaded Tracks
   const [favorites, setFavorites] = useState<Track[]>(INITIAL_QUICK_PICKS.slice(0, 4));
   const [downloadedTracks, setDownloadedTracks] = useState<Track[]>([]);
 
-  // PC Library state (playlists + liked)
+  // Library Playlists (Borrowed Spotify Playlists + PC Playlists)
+  const [borrowedPlaylists, setBorrowedPlaylists] = useState<PCPlaylist[]>([]);
   const [pcPlaylists, setPcPlaylists] = useState<PCPlaylist[]>([]);
   const [selectedPlaylist, setSelectedPlaylist] = useState<PCPlaylist | null>(null);
 
-  // Spotify State
+  // Discreet Library Fetch drawer & modal state
   const [spotifyStatus, setSpotifyStatus] = useState<SpotifyStatus>({ connected: false });
-  const [spotifyPlaylists, setSpotifyPlaylists] = useState<SpotifyPlaylistInfo[]>([]);
-  const [selectedSpotifyPlaylist, setSelectedSpotifyPlaylist] = useState<SpotifyPlaylistInfo | null>(null);
+  const [libraryFetchExpanded, setLibraryFetchExpanded] = useState(false);
   const [spotifyModalVisible, setSpotifyModalVisible] = useState(false);
-  const [spotifyRefreshing, setSpotifyRefreshing] = useState(false);
+  const [spotifyModalInitialTab, setSpotifyModalInitialTab] = useState<"login" | "link" | "pc">(
+    "login"
+  );
 
-  // Library subtab
-  const [librarySubTab, setLibrarySubTab] = useState<"playlists" | "liked" | "queue">("playlists");
+  // Library subtab (Playlists, Liked, Offline, Queue)
+  const [librarySubTab, setLibrarySubTab] = useState<
+    "playlists" | "liked" | "offline" | "queue"
+  >("playlists");
 
   // Modals
   const [connectModalVisible, setConnectModalVisible] = useState(false);
@@ -198,10 +199,6 @@ function MainContent() {
         setFullPlayerVisible(false);
         return true;
       }
-      if (selectedSpotifyPlaylist) {
-        setSelectedSpotifyPlaylist(null);
-        return true;
-      }
       if (selectedPlaylist) {
         setSelectedPlaylist(null);
         return true;
@@ -215,7 +212,7 @@ function MainContent() {
 
     const sub = BackHandler.addEventListener("hardwareBackPress", onBackPress);
     return () => sub.remove();
-  }, [fullPlayerVisible, selectedSpotifyPlaylist, selectedPlaylist, activeTab]);
+  }, [fullPlayerVisible, selectedPlaylist, activeTab]);
 
   // Wire up Native Audio engine listeners for standalone Phone playback
   useEffect(() => {
@@ -261,11 +258,11 @@ function MainContent() {
     }
   }, [playbackTarget, playerState.playing, playerState.duration]);
 
-  // Subscribe to Spotify service changes
+  // Subscribe to Spotify service & borrowed playlists changes
   useEffect(() => {
     const unsubSpotify = spotifyService.subscribe((status) => {
       setSpotifyStatus(status);
-      setSpotifyPlaylists(spotifyService.getPlaylists());
+      setBorrowedPlaylists([...spotifyService.getBorrowedPlaylists()]);
     });
     return unsubSpotify;
   }, []);
@@ -337,19 +334,6 @@ function MainContent() {
     };
   }, []);
 
-  const handleRefreshSpotify = async () => {
-    if (spotifyRefreshing) return;
-    setSpotifyRefreshing(true);
-    try {
-      const lists = await spotifyService.refreshPlaylists();
-      setSpotifyPlaylists(lists);
-    } catch (e) {
-      console.warn("Spotify refresh error:", e);
-    } finally {
-      setSpotifyRefreshing(false);
-    }
-  };
-
   // Search input handler with 350ms debounce
   const handleQueryChange = (text: string) => {
     setQuery(text);
@@ -412,18 +396,19 @@ function MainContent() {
     }));
 
     if (playbackTarget === "phone" || !connected) {
-      // Standalone phone playback via expo-audio
-      const streamUrl = await resolveAudioStream(track.id);
+      // Standalone phone playback via expo-audio (resolves sp_... tracks automatically)
+      const streamUrl = await resolveAudioStream(track.id, track);
       if (streamUrl) {
         await nativeAudio.play(streamUrl);
       } else {
         Alert.alert("Playback error", "Could not resolve audio stream for this track.");
       }
     } else {
-      // Send playback command to FTune Desktop
+      // Send playback command to FTune Desktop (resolve sp_... track first if borrowed)
+      const resolvedTrack = await spotifyService.resolvePlayableTrack(track);
       sendRemoteAction({
         type: "play-track",
-        track,
+        track: resolvedTrack,
         queue: q,
       });
     }
@@ -544,6 +529,26 @@ function MainContent() {
     await deleteDownloadedTrack(trackId);
     setDownloadedTracks((prev) => prev.filter((t) => t.id !== trackId));
   };
+
+  const handleDeleteBorrowedPlaylist = (playlist: PCPlaylist) => {
+    Alert.alert(
+      "Remove Playlist",
+      `Remove "${playlist.name}" from your Library?`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Remove",
+          style: "destructive",
+          onPress: async () => {
+            const updated = await spotifyService.removeBorrowedPlaylist(playlist.id);
+            setBorrowedPlaylists([...updated]);
+          },
+        },
+      ]
+    );
+  };
+
+  const allPlaylists: PCPlaylist[] = [...borrowedPlaylists, ...pcPlaylists];
 
   const topPadding =
     Platform.OS === "android"
@@ -670,48 +675,24 @@ function MainContent() {
               ))}
             </ScrollView>
 
-            {/* Spotify Highlight Banner on Home */}
-            <View style={{ paddingHorizontal: 16, marginTop: 24 }}>
-              <AmbientGlow color={Colors.spotifyGlow} intensity={0.25}>
-                <TouchableOpacity
-                  style={styles.spotifyHomeBanner}
-                  activeOpacity={0.85}
-                  onPress={() => setActiveTab("spotify")}
-                >
-                  <View style={styles.spotifyHomeIconWrap}>
-                    <SpotifyIcon size={28} />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.spotifyHomeTitle}>
-                      {spotifyStatus.connected ? "Spotify Connected" : "Connect Spotify"}
-                    </Text>
-                    <Text style={styles.spotifyHomeSubtitle} numberOfLines={1}>
-                      {spotifyStatus.connected
-                        ? `Tap to stream your playlists and Liked Songs`
-                        : "Import playlists and play from YouTube Music"}
-                    </Text>
-                  </View>
-                  <ChevronRight size={20} color={SPOTIFY_GREEN} />
-                </TouchableOpacity>
-              </AmbientGlow>
-            </View>
-
             {/* Mood Chips */}
             <View style={[styles.sectionHeaderRow, { marginTop: 24 }]}>
               <Text style={styles.sectionTitle}>Moods & Genres</Text>
             </View>
             <View style={styles.moodsWrap}>
-              {["Chill", "Workout", "Focus", "Party", "Pop", "Rock", "Hip-Hop", "Acoustic"].map((mood) => (
-                <TouchableOpacity
-                  key={mood}
-                  style={styles.moodChip}
-                  onPress={() => {
-                    handleQueryChange(mood);
-                  }}
-                >
-                  <Text style={styles.moodChipText}>{mood}</Text>
-                </TouchableOpacity>
-              ))}
+              {["Chill", "Workout", "Focus", "Party", "Pop", "Rock", "Hip-Hop", "Acoustic"].map(
+                (mood) => (
+                  <TouchableOpacity
+                    key={mood}
+                    style={styles.moodChip}
+                    onPress={() => {
+                      handleQueryChange(mood);
+                    }}
+                  >
+                    <Text style={styles.moodChipText}>{mood}</Text>
+                  </TouchableOpacity>
+                )
+              )}
             </View>
           </ScrollView>
         )}
@@ -797,189 +778,7 @@ function MainContent() {
           </View>
         )}
 
-        {/* 3. SPOTIFY TAB (NEW) */}
-        {activeTab === "spotify" && (
-          selectedSpotifyPlaylist ? (
-            <SpotifyMatchedView
-              playlistInfo={selectedSpotifyPlaylist}
-              currentTrackId={playerState.currentTrack?.id}
-              isPlaying={playerState.playing}
-              onBack={() => setSelectedSpotifyPlaylist(null)}
-              onPlaySong={(t, q, idx) => handlePlaySong(t, q, idx)}
-              onToggleFavorite={handleToggleFavorite}
-              isFavorite={(id) => favorites.some((f) => f.id === id)}
-            />
-          ) : (
-            <ScrollView
-              showsVerticalScrollIndicator={false}
-              contentContainerStyle={styles.spotifyScrollContent}
-            >
-              {/* Header Row */}
-              <View style={styles.spotifyHeaderRow}>
-                <View style={{ flex: 1 }}>
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                    <SpotifyIcon size={26} />
-                    <Text style={styles.spotifyPageTitle}>Spotify</Text>
-                  </View>
-                  <Text style={styles.spotifyPageSubtitle}>
-                    {spotifyStatus.connected
-                      ? `Connected as ${spotifyStatus.name || "Listener"}`
-                      : "Stream your Spotify playlists and Liked Songs"}
-                  </Text>
-                </View>
-
-                {spotifyStatus.connected ? (
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                    <SpringTouchable
-                      style={styles.refreshPillBtn}
-                      onPress={handleRefreshSpotify}
-                      disabled={spotifyRefreshing}
-                    >
-                      <RefreshCw
-                        size={14}
-                        color={Colors.inkHi}
-                        style={{ marginRight: 6 }}
-                      />
-                      <Text style={styles.refreshPillText}>
-                        {spotifyRefreshing ? "Refreshing..." : "Refresh"}
-                      </Text>
-                    </SpringTouchable>
-
-                    <TouchableOpacity
-                      style={styles.disconnectBtn}
-                      onPress={() => {
-                        Alert.alert("Disconnect Spotify", "Are you sure you want to disconnect Spotify?", [
-                          { text: "Cancel", style: "cancel" },
-                          { text: "Disconnect", style: "destructive", onPress: () => spotifyService.disconnect() },
-                        ]);
-                      }}
-                    >
-                      <X size={16} color={Colors.inkDim} />
-                    </TouchableOpacity>
-                  </View>
-                ) : (
-                  <SpringTouchable
-                    style={styles.connectTopBtn}
-                    onPress={() => setSpotifyModalVisible(true)}
-                  >
-                    <Text style={styles.connectTopBtnText}>Sign In</Text>
-                  </SpringTouchable>
-                )}
-              </View>
-
-              {/* Not Connected State */}
-              {!spotifyStatus.connected && (
-                <AmbientGlow color={Colors.spotifyGlow} intensity={0.3} style={{ marginHorizontal: 16, marginBottom: 20 }}>
-                  <View style={styles.spotifyHeroCard}>
-                    <SpotifyIcon size={48} />
-                    <Text style={styles.spotifyHeroTitle}>Connect Spotify</Text>
-                    <Text style={styles.spotifyHeroDesc}>
-                      Sign in to Spotify in a sheet of its own, and your playlists and Liked Songs show up here, played from YouTube Music.
-                    </Text>
-                    <SpringTouchable
-                      style={styles.connectFab}
-                      onPress={() => setSpotifyModalVisible(true)}
-                    >
-                      <Text style={styles.connectFabText}>Connect Spotify</Text>
-                    </SpringTouchable>
-                  </View>
-                </AmbientGlow>
-              )}
-
-              {/* Connected: Liked Songs & Playlists */}
-              {spotifyStatus.connected && (
-                <View style={{ paddingHorizontal: 16 }}>
-                  {/* Liked Songs Special Card */}
-                  <SpringTouchable
-                    style={styles.likedHeroCard}
-                    activeScale={0.97}
-                    onPress={() =>
-                      setSelectedSpotifyPlaylist({
-                        id: LIKED_ID,
-                        name: "Liked Songs",
-                        thumb: LIKED_SLEEVE,
-                      })
-                    }
-                  >
-                    <View style={styles.likedArtWrapper}>
-                      <Image source={{ uri: LIKED_SLEEVE }} style={styles.likedArt} />
-                      <View style={styles.likedArtHeart}>
-                        <Heart size={20} color="#ffffff" fill="#ffffff" />
-                      </View>
-                    </View>
-                    <View style={styles.likedHeroInfo}>
-                      <View style={styles.likedBadge}>
-                        <Text style={styles.likedBadgeText}>SPOTIFY</Text>
-                      </View>
-                      <Text style={styles.likedTitle}>Liked Songs</Text>
-                      <Text style={styles.likedSubtitle}>Your Spotify Liked Songs collection</Text>
-                    </View>
-                    <ChevronRight size={20} color={Colors.inkDim} />
-                  </SpringTouchable>
-
-                  {/* Playlists Section */}
-                  <View style={{ marginTop: 22 }}>
-                    <Text style={styles.sectionTitle}>Playlists</Text>
-
-                    {spotifyPlaylists.filter((p) => p.id !== LIKED_ID).length > 0 ? (
-                      spotifyPlaylists
-                        .filter((p) => p.id !== LIKED_ID)
-                        .map((playlist) => (
-                          <TouchableOpacity
-                            key={playlist.id}
-                            style={styles.playlistRow}
-                            activeOpacity={0.7}
-                            onPress={() => setSelectedSpotifyPlaylist(playlist)}
-                          >
-                            <View style={styles.playlistThumbWrapper}>
-                              {playlist.thumb ? (
-                                <Image source={{ uri: playlist.thumb }} style={styles.playlistThumb} />
-                              ) : (
-                                <ListMusic size={22} color={Colors.inkDim} />
-                              )}
-                            </View>
-                            <View style={styles.playlistInfo}>
-                              <Text style={styles.playlistTitle} numberOfLines={1}>
-                                {playlist.name}
-                              </Text>
-                              <Text style={styles.playlistMeta}>
-                                {playlist.owner ? `By ${playlist.owner}` : "Playlist"} • {playlist.total || 0} songs
-                              </Text>
-                            </View>
-                            <ChevronRight size={18} color={Colors.inkDim} />
-                          </TouchableOpacity>
-                        ))
-                    ) : (
-                      <View style={styles.centerState}>
-                        <Text style={[styles.emptySubtitle, { marginTop: 16 }]}>
-                          No custom Spotify playlists found.
-                        </Text>
-                      </View>
-                    )}
-                  </View>
-                </View>
-              )}
-
-              {/* Import Link Banner */}
-              <View style={styles.importBanner}>
-                <View style={{ flex: 1, marginRight: 12 }}>
-                  <Text style={styles.importBannerTitle}>Have a Spotify link?</Text>
-                  <Text style={styles.importBannerDesc}>
-                    Import any public playlist or album URL without signing in.
-                  </Text>
-                </View>
-                <SpringTouchable
-                  style={styles.importBannerBtn}
-                  onPress={() => setSpotifyModalVisible(true)}
-                >
-                  <Text style={styles.importBannerBtnText}>Import</Text>
-                </SpringTouchable>
-              </View>
-            </ScrollView>
-          )
-        )}
-
-        {/* 4. LIBRARY / PLAYLISTS TAB */}
+        {/* 3. LIBRARY TAB (Playlists, Liked, Offline, Queue + Discreet Library Fetch) */}
         {activeTab === "library" && (
           selectedPlaylist ? (
             <PlaylistDetailView
@@ -992,71 +791,155 @@ function MainContent() {
                 if (tracks.length > 0) handlePlaySong(tracks[0], tracks, 0);
               }}
               onToggleFavorite={handleToggleFavorite}
+              isFavorite={(id) => favorites.some((f) => f.id === id)}
             />
           ) : (
             <View style={styles.queueContainer}>
-              {/* Library Subtabs */}
+              {/* Library Subtabs Row + Discreet Tucked-Away Fetch Toggle */}
               <View style={styles.subtabRow}>
-                <TouchableOpacity
-                  style={[
-                    styles.subtabBtn,
-                    librarySubTab === "playlists" && styles.subtabBtnActive,
-                  ]}
-                  onPress={() => setLibrarySubTab("playlists")}
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.subtabScroll}
                 >
-                  <Text
+                  <TouchableOpacity
                     style={[
-                      styles.subtabText,
-                      librarySubTab === "playlists" && styles.subtabTextActive,
+                      styles.subtabBtn,
+                      librarySubTab === "playlists" && styles.subtabBtnActive,
                     ]}
+                    onPress={() => setLibrarySubTab("playlists")}
                   >
-                    PC Playlists ({pcPlaylists.length})
-                  </Text>
-                </TouchableOpacity>
+                    <Text
+                      style={[
+                        styles.subtabText,
+                        librarySubTab === "playlists" && styles.subtabTextActive,
+                      ]}
+                    >
+                      Playlists ({allPlaylists.length})
+                    </Text>
+                  </TouchableOpacity>
 
-                <TouchableOpacity
-                  style={[
-                    styles.subtabBtn,
-                    librarySubTab === "liked" && styles.subtabBtnActive,
-                  ]}
-                  onPress={() => setLibrarySubTab("liked")}
-                >
-                  <Text
+                  <TouchableOpacity
                     style={[
-                      styles.subtabText,
-                      librarySubTab === "liked" && styles.subtabTextActive,
+                      styles.subtabBtn,
+                      librarySubTab === "liked" && styles.subtabBtnActive,
                     ]}
+                    onPress={() => setLibrarySubTab("liked")}
                   >
-                    Liked ({favorites.length})
-                  </Text>
-                </TouchableOpacity>
+                    <Text
+                      style={[
+                        styles.subtabText,
+                        librarySubTab === "liked" && styles.subtabTextActive,
+                      ]}
+                    >
+                      Liked ({favorites.length})
+                    </Text>
+                  </TouchableOpacity>
 
+                  <TouchableOpacity
+                    style={[
+                      styles.subtabBtn,
+                      librarySubTab === "offline" && styles.subtabBtnActive,
+                    ]}
+                    onPress={() => setLibrarySubTab("offline")}
+                  >
+                    <Text
+                      style={[
+                        styles.subtabText,
+                        librarySubTab === "offline" && styles.subtabTextActive,
+                      ]}
+                    >
+                      Offline ({downloadedTracks.length})
+                    </Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[
+                      styles.subtabBtn,
+                      librarySubTab === "queue" && styles.subtabBtnActive,
+                    ]}
+                    onPress={() => setLibrarySubTab("queue")}
+                  >
+                    <Text
+                      style={[
+                        styles.subtabText,
+                        librarySubTab === "queue" && styles.subtabTextActive,
+                      ]}
+                    >
+                      Queue ({playerState.queue.length})
+                    </Text>
+                  </TouchableOpacity>
+                </ScrollView>
+
+                {/* Tucked-away discreet Library Fetch icon button */}
                 <TouchableOpacity
                   style={[
-                    styles.subtabBtn,
-                    librarySubTab === "queue" && styles.subtabBtnActive,
+                    styles.discreetFetchBtn,
+                    libraryFetchExpanded && styles.discreetFetchBtnActive,
                   ]}
-                  onPress={() => setLibrarySubTab("queue")}
+                  onPress={() => setLibraryFetchExpanded((prev) => !prev)}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 >
-                  <Text
-                    style={[
-                      styles.subtabText,
-                      librarySubTab === "queue" && styles.subtabTextActive,
-                    ]}
-                  >
-                    Queue ({playerState.queue.length})
-                  </Text>
+                  <SlidersHorizontal
+                    size={15}
+                    color={libraryFetchExpanded ? Colors.inkHi : Colors.inkGhost}
+                  />
                 </TouchableOpacity>
               </View>
 
-              {/* PC Playlists Section */}
+              {/* Collapsible Tucked-Away Library Fetch Drawer */}
+              {libraryFetchExpanded && (
+                <View style={styles.hiddenFetchDrawer}>
+                  <View style={styles.hiddenFetchHeader}>
+                    <Text style={styles.hiddenFetchLabel}>LIBRARY FETCH & BORROW</Text>
+                    {spotifyStatus.connected && (
+                      <Text style={styles.hiddenFetchConnectedText}>
+                        ● {spotifyStatus.name || "Spotify Connected"}
+                      </Text>
+                    )}
+                  </View>
+
+                  <View style={styles.hiddenFetchActions}>
+                    <TouchableOpacity
+                      style={styles.hiddenFetchOption}
+                      activeOpacity={0.75}
+                      onPress={() => {
+                        setSpotifyModalInitialTab("login");
+                        setSpotifyModalVisible(true);
+                      }}
+                    >
+                      <SpotifyIcon size={16} />
+                      <Text style={styles.hiddenFetchOptionText}>
+                        {spotifyStatus.connected
+                          ? "Borrow Playlists / Liked"
+                          : "Spotify Login & Borrow"}
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.hiddenFetchOption}
+                      activeOpacity={0.75}
+                      onPress={() => {
+                        setSpotifyModalInitialTab("link");
+                        setSpotifyModalVisible(true);
+                      }}
+                    >
+                      <Link2 size={15} color={SPOTIFY_GREEN} />
+                      <Text style={styles.hiddenFetchOptionText}>Import Spotify Link</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+
+              {/* 3A. Playlists Subtab (Borrowed Spotify Playlists + PC Playlists) */}
               {librarySubTab === "playlists" && (
-                pcPlaylists.length > 0 ? (
+                allPlaylists.length > 0 ? (
                   <FlatList
-                    data={pcPlaylists}
+                    data={allPlaylists}
                     keyExtractor={(item) => item.id}
                     renderItem={({ item }) => {
-                      const firstArt = item.tracks?.[0]?.thumb || "";
+                      const coverArt = item.thumb || item.tracks?.[0]?.thumb || "";
+                      const isBorrowed = item.source === "spotify";
                       return (
                         <TouchableOpacity
                           style={styles.playlistRow}
@@ -1064,8 +947,8 @@ function MainContent() {
                           onPress={() => setSelectedPlaylist(item)}
                         >
                           <View style={styles.playlistThumbWrapper}>
-                            {firstArt ? (
-                              <Image source={{ uri: firstArt }} style={styles.playlistThumb} />
+                            {coverArt ? (
+                              <Image source={{ uri: coverArt }} style={styles.playlistThumb} />
                             ) : (
                               <ListMusic size={22} color={Colors.inkDim} />
                             )}
@@ -1074,10 +957,24 @@ function MainContent() {
                             <Text style={styles.playlistTitle} numberOfLines={1}>
                               {item.name}
                             </Text>
-                            <Text style={styles.playlistMeta}>
-                              Playlist • {item.tracks?.length || 0} songs
+                            <Text style={styles.playlistMeta} numberOfLines={1}>
+                              {isBorrowed
+                                ? `Borrowed${item.owner ? ` • ${item.owner}` : ""}`
+                                : "PC Playlist"}{" "}
+                              • {item.tracks?.length || 0} songs
                             </Text>
                           </View>
+
+                          {isBorrowed && (
+                            <TouchableOpacity
+                              style={styles.deleteDlBtn}
+                              onPress={() => handleDeleteBorrowedPlaylist(item)}
+                              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                            >
+                              <Trash2 size={15} color={Colors.inkGhost} />
+                            </TouchableOpacity>
+                          )}
+
                           <ChevronRight size={18} color={Colors.inkDim} />
                         </TouchableOpacity>
                       );
@@ -1087,17 +984,15 @@ function MainContent() {
                 ) : (
                   <View style={styles.centerState}>
                     <ListMusic size={44} color={Colors.borderLight} />
-                    <Text style={styles.emptyTitle}>No PC playlists found</Text>
+                    <Text style={styles.emptyTitle}>No playlists in Library yet</Text>
                     <Text style={styles.emptySubtitle}>
-                      {connected
-                        ? "Create playlists in FTune on your PC and they will appear here automatically."
-                        : "Connect to FTune on your PC to view and play all your computer's playlists."}
+                      Tap the tune icon in the top-right corner of Library to borrow your playlists or import a link.
                     </Text>
                   </View>
                 )
               )}
 
-              {/* Liked Songs Subtab */}
+              {/* 3B. Liked Songs Subtab */}
               {librarySubTab === "liked" && (
                 favorites.length > 0 ? (
                   <FlatList
@@ -1120,13 +1015,55 @@ function MainContent() {
                     <Heart size={44} color={Colors.borderLight} />
                     <Text style={styles.emptyTitle}>No liked songs yet</Text>
                     <Text style={styles.emptySubtitle}>
-                      Tap the heart icon on any track to save it to your liked songs.
+                      Tap the heart icon on any track or borrow your Liked Songs from Library Fetch.
                     </Text>
                   </View>
                 )
               )}
 
-              {/* Queue Subtab */}
+              {/* 3C. Offline Downloads Subtab (Moved inside Library!) */}
+              {librarySubTab === "offline" && (
+                downloadedTracks.length > 0 ? (
+                  <FlatList
+                    data={downloadedTracks}
+                    keyExtractor={(item) => item.id}
+                    renderItem={({ item }) => (
+                      <View style={styles.downloadRowWrapper}>
+                        <View style={{ flex: 1 }}>
+                          <SongRow
+                            track={item}
+                            isPlaying={
+                              playerState.currentTrack?.id === item.id && playerState.playing
+                            }
+                            isCurrent={playerState.currentTrack?.id === item.id}
+                            isFavorite={favorites.some((f) => f.id === item.id)}
+                            onPlay={(t) => handlePlaySong(t, downloadedTracks)}
+                            onToggleFavorite={handleToggleFavorite}
+                          />
+                        </View>
+                        <TouchableOpacity
+                          style={styles.deleteDlBtn}
+                          onPress={() => handleDeleteDownloaded(item.id)}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                        >
+                          <Trash2 size={16} color={Colors.inkDim} />
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                    contentContainerStyle={{ paddingBottom: 20 }}
+                  />
+                ) : (
+                  <View style={styles.centerState}>
+                    <Download size={44} color={Colors.borderLight} />
+                    <Text style={styles.emptyTitle}>No offline songs yet</Text>
+                    <Text style={styles.emptySubtitle}>
+                      Tap the download icon on any song or playlist to save it right on your phone for offline playback.
+                    </Text>
+                  </View>
+                )
+              )}
+
+              {/* 3D. Queue Subtab */}
               {librarySubTab === "queue" && (
                 playerState.queue.length > 0 ? (
                   <FlatList
@@ -1138,7 +1075,7 @@ function MainContent() {
                         isPlaying={index === playerState.index && playerState.playing}
                         isCurrent={index === playerState.index}
                         isFavorite={favorites.some((f) => f.id === item.id)}
-                        onPlay={(t) => handleJumpToQueue(index)}
+                        onPlay={() => handleJumpToQueue(index)}
                         onToggleFavorite={handleToggleFavorite}
                       />
                     )}
@@ -1149,64 +1086,13 @@ function MainContent() {
                     <Disc3 size={44} color={Colors.borderLight} />
                     <Text style={styles.emptyTitle}>Queue is empty</Text>
                     <Text style={styles.emptySubtitle}>
-                      Play any song from Home, Search or Playlists to start your queue.
+                      Play any song from Home, Search or Library to start your queue.
                     </Text>
                   </View>
                 )
               )}
             </View>
           )
-        )}
-
-        {/* 5. OFFLINE DOWNLOADS TAB */}
-        {activeTab === "offline" && (
-          <View style={styles.queueContainer}>
-            <View style={styles.offlineHeader}>
-              <View>
-                <Text style={styles.offlineTitle}>Downloaded Music</Text>
-                <Text style={styles.offlineSubtitle}>
-                  {downloadedTracks.length} songs available offline
-                </Text>
-              </View>
-            </View>
-
-            {downloadedTracks.length > 0 ? (
-              <FlatList
-                data={downloadedTracks}
-                keyExtractor={(item) => item.id}
-                renderItem={({ item }) => (
-                  <View style={styles.downloadRowWrapper}>
-                    <View style={{ flex: 1 }}>
-                      <SongRow
-                        track={item}
-                        isPlaying={playerState.currentTrack?.id === item.id && playerState.playing}
-                        isCurrent={playerState.currentTrack?.id === item.id}
-                        isFavorite={favorites.some((f) => f.id === item.id)}
-                        onPlay={(t) => handlePlaySong(t, downloadedTracks)}
-                        onToggleFavorite={handleToggleFavorite}
-                      />
-                    </View>
-                    <TouchableOpacity
-                      style={styles.deleteDlBtn}
-                      onPress={() => handleDeleteDownloaded(item.id)}
-                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                    >
-                      <Trash2 size={16} color={Colors.inkDim} />
-                    </TouchableOpacity>
-                  </View>
-                )}
-                contentContainerStyle={{ paddingBottom: 20 }}
-              />
-            ) : (
-              <View style={styles.centerState}>
-                <Download size={44} color={Colors.borderLight} />
-                <Text style={styles.emptyTitle}>No offline songs yet</Text>
-                <Text style={styles.emptySubtitle}>
-                  Tap the download icon on any song or playlist to save it right on your phone for offline playback.
-                </Text>
-              </View>
-            )}
-          </View>
         )}
       </View>
 
@@ -1219,12 +1105,11 @@ function MainContent() {
         onPress={() => setFullPlayerVisible(true)}
       />
 
-      {/* 5-Tab Bottom Navigation Bar */}
+      {/* 3-Tab Bottom Navigation Bar (Home, Search, Library) */}
       <BottomNavBar
         activeTab={activeTab}
         onSelectTab={(tab) => {
           setSelectedPlaylist(null);
-          setSelectedSpotifyPlaylist(null);
           setActiveTab(tab);
         }}
         bottomInset={insets.bottom}
@@ -1235,11 +1120,7 @@ function MainContent() {
         visible={fullPlayerVisible}
         playerState={playerState}
         playbackTarget={playbackTarget}
-        serverHostname={
-          playbackTarget === "phone"
-            ? "This Phone"
-            : `${hostname}`
-        }
+        serverHostname={playbackTarget === "phone" ? "This Phone" : `${hostname}`}
         isFavorite={
           !!playerState.currentTrack &&
           favorites.some((f) => f.id === playerState.currentTrack?.id)
@@ -1271,13 +1152,25 @@ function MainContent() {
         }}
       />
 
-      {/* In-App Spotify Login & Import Modal */}
+      {/* Library Fetch: In-App Spotify Login, Playlist/Liked Borrow Picker & Import Link Modal */}
       <SpotifyLoginModal
         visible={spotifyModalVisible}
+        initialTab={spotifyModalInitialTab}
         onClose={() => setSpotifyModalVisible(false)}
-        onSuccess={() => {
+        onSuccess={async (res) => {
           setSpotifyStatus(spotifyService.getStatus());
-          setSpotifyPlaylists(spotifyService.getPlaylists());
+          setBorrowedPlaylists([...spotifyService.getBorrowedPlaylists()]);
+          if (res?.likedTracks && res.likedTracks.length > 0) {
+            setFavorites(res.likedTracks);
+          } else {
+            const favs = await getOfflineFavorites();
+            if (favs.length > 0) setFavorites(favs);
+          }
+          setActiveTab("library");
+          setLibrarySubTab("playlists");
+          if (res?.openPlaylist) {
+            setSelectedPlaylist(res.openPlaylist);
+          }
         }}
       />
     </View>
@@ -1398,34 +1291,6 @@ const styles = StyleSheet.create({
   shelfScroll: {
     paddingLeft: 16,
   },
-  spotifyHomeBanner: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: Colors.panel,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: Colors.hairline,
-    padding: 14,
-    gap: 12,
-  },
-  spotifyHomeIconWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: "rgba(30, 215, 96, 0.15)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  spotifyHomeTitle: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: Colors.inkHi,
-    marginBottom: 2,
-  },
-  spotifyHomeSubtitle: {
-    fontSize: 12,
-    color: Colors.inkDim,
-  },
   moodsWrap: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -1523,201 +1388,26 @@ const styles = StyleSheet.create({
     textAlign: "center",
     lineHeight: 18,
   },
-  spotifyScrollContent: {
-    paddingBottom: 40,
-  },
-  spotifyHeaderRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-  },
-  spotifyPageTitle: {
-    fontSize: 24,
-    fontWeight: "800",
-    color: Colors.inkHi,
-    letterSpacing: -0.4,
-  },
-  spotifyPageSubtitle: {
-    fontSize: 12.5,
-    color: Colors.inkDim,
-    marginTop: 3,
-  },
-  refreshPillBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: Colors.panel,
-    borderWidth: 1,
-    borderColor: Colors.hairline,
-    borderRadius: 999,
-    paddingVertical: 7,
-    paddingHorizontal: 14,
-  },
-  refreshPillText: {
-    fontSize: 12.5,
-    fontWeight: "600",
-    color: Colors.inkHi,
-  },
-  disconnectBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: Colors.panel,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  connectTopBtn: {
-    backgroundColor: Colors.inkHi,
-    borderRadius: 999,
-    paddingVertical: 8,
-    paddingHorizontal: 18,
-  },
-  connectTopBtnText: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: Colors.onPrimary,
-  },
-  spotifyHeroCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: Colors.hairline,
-    padding: 24,
-    alignItems: "center",
-  },
-  spotifyHeroTitle: {
-    fontSize: 21,
-    fontWeight: "800",
-    color: Colors.inkHi,
-    marginTop: 14,
-    marginBottom: 8,
-  },
-  spotifyHeroDesc: {
-    fontSize: 13,
-    color: Colors.inkDim,
-    textAlign: "center",
-    lineHeight: 19,
-    marginBottom: 20,
-  },
-  connectFab: {
-    backgroundColor: Colors.primary,
-    borderRadius: 999,
-    paddingVertical: 12,
-    paddingHorizontal: 32,
-  },
-  connectFabText: {
-    fontSize: 14.5,
-    fontWeight: "700",
-    color: Colors.onPrimary,
-  },
-  likedHeroCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: Colors.panel,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: Colors.hairline,
-    padding: 12,
-  },
-  likedArtWrapper: {
-    position: "relative",
-    width: 60,
-    height: 60,
-    borderRadius: 10,
-    overflow: "hidden",
-    marginRight: 14,
-    backgroundColor: Colors.surface,
-  },
-  likedArt: {
-    width: "100%",
-    height: "100%",
-  },
-  likedArtHeart: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: "rgba(30, 215, 96, 0.4)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  likedHeroInfo: {
-    flex: 1,
-  },
-  likedBadge: {
-    alignSelf: "flex-start",
-    backgroundColor: "rgba(30, 215, 96, 0.15)",
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-    marginBottom: 4,
-  },
-  likedBadgeText: {
-    fontSize: 9.5,
-    fontWeight: "800",
-    color: SPOTIFY_GREEN,
-    letterSpacing: 0.6,
-  },
-  likedTitle: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: Colors.inkHi,
-    marginBottom: 2,
-  },
-  likedSubtitle: {
-    fontSize: 12,
-    color: Colors.inkDim,
-  },
-  importBanner: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    backgroundColor: Colors.panel,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: Colors.hairline,
-    marginHorizontal: 16,
-    marginTop: 24,
-    padding: 16,
-  },
-  importBannerTitle: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: Colors.inkHi,
-    marginBottom: 2,
-  },
-  importBannerDesc: {
-    fontSize: 12,
-    color: Colors.inkDim,
-  },
-  importBannerBtn: {
-    backgroundColor: Colors.elevated,
-    borderRadius: 999,
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    borderWidth: 1,
-    borderColor: Colors.borderLight,
-  },
-  importBannerBtnText: {
-    fontSize: 12.5,
-    fontWeight: "700",
-    color: Colors.inkHi,
-  },
   queueContainer: {
     flex: 1,
   },
   subtabRow: {
     flexDirection: "row",
-    paddingHorizontal: 16,
+    alignItems: "center",
+    paddingLeft: 16,
+    paddingRight: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: Colors.hairline,
-    marginBottom: 8,
+    marginBottom: 4,
+  },
+  subtabScroll: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingRight: 8,
   },
   subtabBtn: {
     paddingVertical: 10,
-    marginRight: 20,
+    marginRight: 18,
     borderBottomWidth: 2,
     borderBottomColor: "transparent",
   },
@@ -1732,6 +1422,70 @@ const styles = StyleSheet.create({
   subtabTextActive: {
     color: Colors.inkHi,
     fontWeight: "700",
+  },
+  discreetFetchBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "transparent",
+    marginLeft: 4,
+  },
+  discreetFetchBtnActive: {
+    backgroundColor: Colors.panel,
+    borderWidth: 1,
+    borderColor: Colors.hairline,
+  },
+  hiddenFetchDrawer: {
+    marginHorizontal: 16,
+    marginTop: 6,
+    marginBottom: 10,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: Colors.panel,
+    borderWidth: 1,
+    borderColor: Colors.hairline,
+  },
+  hiddenFetchHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 8,
+  },
+  hiddenFetchLabel: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: Colors.inkGhost,
+    letterSpacing: 0.8,
+  },
+  hiddenFetchConnectedText: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: SPOTIFY_GREEN,
+  },
+  hiddenFetchActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  hiddenFetchOption: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+    paddingVertical: 9,
+    paddingHorizontal: 10,
+    borderRadius: 9,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.hairline,
+  },
+  hiddenFetchOptionText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: Colors.inkHi,
   },
   playlistRow: {
     flexDirection: "row",
@@ -1769,26 +1523,6 @@ const styles = StyleSheet.create({
   playlistMeta: {
     fontSize: 12,
     color: Colors.inkDim,
-  },
-  offlineHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: Colors.hairline,
-  },
-  offlineTitle: {
-    fontSize: 18,
-    fontWeight: "800",
-    color: Colors.inkHi,
-    letterSpacing: -0.3,
-  },
-  offlineSubtitle: {
-    fontSize: 12,
-    color: Colors.inkDim,
-    marginTop: 2,
   },
   downloadRowWrapper: {
     flexDirection: "row",

@@ -14,6 +14,7 @@ import { Colors } from "../theme/colors";
 import type { PCPlaylist, Track } from "../types";
 import { SongRow } from "./SongRow";
 import { downloadTrack, isTrackDownloaded } from "../services/downloadManager";
+import { spotifyService } from "../services/spotify";
 import { SpringTouchable, AmbientGlow } from "./AnimatedComponents";
 
 interface PlaylistDetailViewProps {
@@ -24,6 +25,7 @@ interface PlaylistDetailViewProps {
   onPlaySong: (track: Track, queue: Track[]) => void;
   onPlayAll: (tracks: Track[]) => void;
   onToggleFavorite?: (track: Track) => void;
+  isFavorite?: (trackId: string) => boolean;
 }
 
 export const PlaylistDetailView: React.FC<PlaylistDetailViewProps> = ({
@@ -34,6 +36,7 @@ export const PlaylistDetailView: React.FC<PlaylistDetailViewProps> = ({
   onPlaySong,
   onPlayAll,
   onToggleFavorite,
+  isFavorite,
 }) => {
   const [downloadingAll, setDownloadingAll] = useState(false);
   const [downloadedCount, setDownloadedCount] = useState(0);
@@ -49,8 +52,19 @@ export const PlaylistDetailView: React.FC<PlaylistDetailViewProps> = ({
 
   const tracks = playlist.tracks || [];
   const firstCover =
+    playlist.thumb ||
     tracks[0]?.thumb ||
     "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=500";
+
+  // Pre-warm YouTube matches for the first 5 tracks of a borrowed Spotify playlist
+  useEffect(() => {
+    const initial = tracks.slice(0, 5);
+    for (const t of initial) {
+      if (t.id.startsWith("sp_")) {
+        spotifyService.resolvePlayableTrack(t).catch(() => {});
+      }
+    }
+  }, [playlist.id]);
 
   const handleDownloadAll = async () => {
     if (downloadingAll || tracks.length === 0) return;
@@ -86,11 +100,16 @@ export const PlaylistDetailView: React.FC<PlaylistDetailViewProps> = ({
         <View style={styles.hero}>
           <Image source={{ uri: firstCover }} style={styles.heroCover} />
           <View style={styles.heroInfo}>
-            <Text style={styles.playlistType}>PLAYLIST</Text>
+            <Text style={styles.playlistType}>
+              {playlist.source === "spotify" ? "BORROWED PLAYLIST" : "PLAYLIST"}
+            </Text>
             <Text style={styles.playlistName} numberOfLines={2}>
               {playlist.name}
             </Text>
-            <Text style={styles.trackCount}>{tracks.length} songs</Text>
+            <Text style={styles.trackCount}>
+              {playlist.owner ? `By ${playlist.owner} • ` : ""}
+              {tracks.length} songs
+            </Text>
           </View>
         </View>
       </AmbientGlow>
@@ -138,6 +157,7 @@ export const PlaylistDetailView: React.FC<PlaylistDetailViewProps> = ({
             track={item}
             isPlaying={currentTrackId === item.id && !!isPlaying}
             isCurrent={currentTrackId === item.id}
+            isFavorite={isFavorite ? isFavorite(item.id) : false}
             onPlay={(t) => onPlaySong(t, tracks)}
             onToggleFavorite={onToggleFavorite}
           />

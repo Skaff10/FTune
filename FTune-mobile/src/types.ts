@@ -9,6 +9,7 @@ export interface Track {
   thumb: string;
   explicit?: boolean;
   localUri?: string; // set when downloaded locally
+  spotifyId?: string; // set when borrowed from Spotify
 }
 
 export interface Album {
@@ -38,6 +39,9 @@ export interface PCPlaylist {
   id: string;
   name: string;
   tracks: Track[];
+  thumb?: string;
+  owner?: string;
+  source?: "spotify" | "pc" | "local";
   createdAt?: number;
   pinned?: boolean;
 }

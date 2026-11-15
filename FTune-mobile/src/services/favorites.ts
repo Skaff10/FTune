@@ -32,6 +32,26 @@ export async function toggleOfflineFavorite(track: Track): Promise<boolean> {
   }
 }
 
+export async function mergeOfflineFavorites(newTracks: Track[]): Promise<Track[]> {
+  try {
+    const favs = await getOfflineFavorites();
+    const seen = new Set(favs.map((t) => t.id));
+    const seenSp = new Set(favs.map((t) => t.spotifyId).filter(Boolean));
+    const added: Track[] = [];
+    for (const t of newTracks) {
+      if (seen.has(t.id) || (t.spotifyId && seenSp.has(t.spotifyId))) continue;
+      seen.add(t.id);
+      if (t.spotifyId) seenSp.add(t.spotifyId);
+      added.push(t);
+    }
+    const updated = [...added, ...favs];
+    await AsyncStorage.setItem(FAVORITES_KEY, JSON.stringify(updated));
+    return updated;
+  } catch {
+    return [];
+  }
+}
+
 export async function isFavorite(trackId: string): Promise<boolean> {
   try {
     const favs = await getOfflineFavorites();

@@ -1,10 +1,9 @@
 import React from "react";
 import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
-import { Home, Search, Library, Download } from "lucide-react-native";
+import { Home, Search, Library } from "lucide-react-native";
 import { Colors } from "../theme/colors";
-import { SpotifyIcon, SPOTIFY_GREEN } from "./SpotifyIcon";
 
-export type TabKey = "home" | "search" | "spotify" | "library" | "offline";
+export type TabKey = "home" | "search" | "library";
 
 interface BottomNavBarProps {
   activeTab: TabKey;
@@ -49,25 +48,6 @@ export const BottomNavBar: React.FC<BottomNavBarProps> = ({
 
       <TouchableOpacity
         style={styles.tab}
-        onPress={() => onSelectTab("spotify")}
-        activeOpacity={0.7}
-      >
-        <SpotifyIcon
-          size={21}
-          color={activeTab === "spotify" ? SPOTIFY_GREEN : Colors.inkDim}
-        />
-        <Text
-          style={[
-            styles.tabLabel,
-            activeTab === "spotify" && [styles.tabLabelActive, { color: SPOTIFY_GREEN }],
-          ]}
-        >
-          Spotify
-        </Text>
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        style={styles.tab}
         onPress={() => onSelectTab("library")}
         activeOpacity={0.7}
       >
@@ -77,20 +57,6 @@ export const BottomNavBar: React.FC<BottomNavBarProps> = ({
         />
         <Text style={[styles.tabLabel, activeTab === "library" && styles.tabLabelActive]}>
           Library
-        </Text>
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        style={styles.tab}
-        onPress={() => onSelectTab("offline")}
-        activeOpacity={0.7}
-      >
-        <Download
-          size={21}
-          color={activeTab === "offline" ? Colors.inkHi : Colors.inkDim}
-        />
-        <Text style={[styles.tabLabel, activeTab === "offline" && styles.tabLabelActive]}>
-          Offline
         </Text>
       </TouchableOpacity>
     </View>

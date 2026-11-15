@@ -1,5 +1,7 @@
 import { getDownloadedTrackUri } from "./downloadManager";
 import { getServerUrl, isServerConnected } from "./api";
+import { spotifyService } from "./spotify";
+import type { Track } from "../types";
 
 let cachedVisitorData: string | null = null;
 let visitorDataTime = 0;
@@ -107,24 +109,36 @@ async function resolveViaPiped(videoId: string): Promise<string | null> {
   return null;
 }
 
-export async function resolveAudioStream(videoId: string): Promise<string | null> {
-  // 1. Check offline local download first
+export async function resolveAudioStream(videoId: string, trackMeta?: Track): Promise<string | null> {
+  // 1. Check offline local download first (by original track id)
   try {
     const local = await getDownloadedTrackUri(videoId);
     if (local) return local;
   } catch {}
 
+  // 1b. If this is a borrowed Spotify track (`sp_...`), resolve its YouTube Music videoId first
+  let ytId = videoId;
+  if (videoId.startsWith("sp_") || videoId.startsWith("sp:")) {
+    const resolved = await spotifyService.resolveYoutubeVideoId(trackMeta || videoId);
+    if (!resolved) return null;
+    ytId = resolved;
+    try {
+      const localResolved = await getDownloadedTrackUri(ytId);
+      if (localResolved) return localResolved;
+    } catch {}
+  }
+
   // 2. Direct standalone YouTube resolution on device
-  const directUrl = await resolveDirectYouTube(videoId);
+  const directUrl = await resolveDirectYouTube(ytId);
   if (directUrl) return directUrl;
 
   // 3. Fallback to PC stream if PC is connected
   if (isServerConnected()) {
-    return `${getServerUrl()}/api/stream?id=${encodeURIComponent(videoId)}`;
+    return `${getServerUrl()}/api/stream?id=${encodeURIComponent(ytId)}`;
   }
 
   // 4. Piped fallback
-  const pipedUrl = await resolveViaPiped(videoId);
+  const pipedUrl = await resolveViaPiped(ytId);
   if (pipedUrl) return pipedUrl;
 
   return null;

@@ -89,12 +89,13 @@ export async function downloadTrack(
     if (existingUri) return existingUri;
 
     // Resolve remote audio stream URL
-    const streamUrl = await resolveAudioStream(track.id);
+    const streamUrl = await resolveAudioStream(track.id, track);
     if (!streamUrl) {
       throw new Error("Could not resolve audio stream for download");
     }
 
-    const localFile = `${DOWNLOADS_DIR}${track.id}.m4a`;
+    const safeFileId = track.id.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const localFile = `${DOWNLOADS_DIR}${safeFileId}.m4a`;
 
     // Download with progress callback
     const downloadResumable = FileSystem.createDownloadResumable(
