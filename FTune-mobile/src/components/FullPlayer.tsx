@@ -38,6 +38,7 @@ import {
 import { Colors } from "../theme/colors";
 import type { RemotePlayerState, Track } from "../types";
 import { isTrackDownloaded, downloadTrack } from "../services/downloadManager";
+import { EqBars, AnimatedHeart, SpringTouchable } from "./AnimatedComponents";
 
 const { width, height } = Dimensions.get("window");
 const COVER_SIZE = Math.min(width - 56, 360);
@@ -275,18 +276,16 @@ export const FullPlayer: React.FC<FullPlayerProps> = ({
               )}
             </TouchableOpacity>
 
-            {/* Favorite / Liked Song Button */}
+            {/* Favorite / Liked Song Button with Pop Animation */}
             {onToggleFavorite && (
-              <TouchableOpacity
-                style={styles.iconCircle}
-                onPress={() => onToggleFavorite(track)}
-              >
-                <Heart
-                  size={22}
-                  color={isFavorite ? "#ef4444" : Colors.textSecondary}
-                  fill={isFavorite ? "#ef4444" : "transparent"}
+              <View style={styles.iconCircle}>
+                <AnimatedHeart
+                  isFavorite={isFavorite}
+                  onPress={() => onToggleFavorite(track)}
+                  size={24}
+                  color={Colors.inkDim}
                 />
-              </TouchableOpacity>
+              </View>
             )}
           </View>
         </View>
@@ -342,11 +341,11 @@ export const FullPlayer: React.FC<FullPlayerProps> = ({
             <SkipBack size={32} color="#ffffff" fill="#ffffff" />
           </TouchableOpacity>
 
-          {/* Large White Play / Pause Circle (FTune Desktop Spec) */}
-          <TouchableOpacity
+          {/* Large White Play / Pause Circle with Spring Physics */}
+          <SpringTouchable
             style={styles.playCircle}
             onPress={onTogglePlay}
-            activeOpacity={0.85}
+            activeScale={0.92}
           >
             {playerState.playing ? (
               <Pause size={30} color="#000000" fill="#000000" />
@@ -358,7 +357,7 @@ export const FullPlayer: React.FC<FullPlayerProps> = ({
                 style={{ marginLeft: 3 }}
               />
             )}
-          </TouchableOpacity>
+          </SpringTouchable>
 
           {/* Next Track Button */}
           <TouchableOpacity

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useCallback } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import {
   StyleSheet,
   Text,
@@ -21,7 +21,6 @@ import {
   X,
   Laptop,
   Smartphone,
-  Music,
   Sparkles,
   Disc3,
   Heart,
@@ -29,6 +28,8 @@ import {
   ListMusic,
   ChevronRight,
   Trash2,
+  RefreshCw,
+  ExternalLink,
 } from "lucide-react-native";
 import { Colors } from "./src/theme/colors";
 import type {
@@ -37,6 +38,8 @@ import type {
   RemotePlayerState,
   SearchFilter,
   Track,
+  SpotifyPlaylistInfo,
+  SpotifyStatus,
 } from "./src/types";
 import {
   initServerAddress,
@@ -45,7 +48,6 @@ import {
   connectWebSocket,
   autoDiscover,
   fetchPCLibrary,
-  fetchPlaylistDetails,
 } from "./src/services/api";
 import { nativeAudio } from "./src/services/nativeAudio";
 import { resolveAudioStream } from "./src/services/streamResolver";
@@ -53,8 +55,8 @@ import {
   getDownloadedTracks,
   subscribeDownloads,
   deleteDownloadedTrack,
-  downloadTrack,
 } from "./src/services/downloadManager";
+import { spotifyService, LIKED_ID, LIKED_SLEEVE } from "./src/services/spotify";
 import { SongRow } from "./src/components/SongRow";
 import { MiniPlayer } from "./src/components/MiniPlayer";
 import { FullPlayer } from "./src/components/FullPlayer";
@@ -63,6 +65,10 @@ import { BottomNavBar, type TabKey } from "./src/components/BottomNavBar";
 import { QuickTile } from "./src/components/QuickTile";
 import { ShelfCard } from "./src/components/ShelfCard";
 import { PlaylistDetailView } from "./src/components/PlaylistDetailView";
+import { SpotifyMatchedView } from "./src/components/SpotifyMatchedView";
+import { SpotifyLoginModal } from "./src/components/SpotifyLoginModal";
+import { SpotifyIcon, SPOTIFY_GREEN } from "./src/components/SpotifyIcon";
+import { SpringTouchable, AmbientGlow } from "./src/components/AnimatedComponents";
 import { FTuneLogo } from "./src/components/FTuneLogo";
 import {
   getOfflineFavorites,
@@ -145,6 +151,13 @@ function MainContent() {
   const [pcPlaylists, setPcPlaylists] = useState<PCPlaylist[]>([]);
   const [selectedPlaylist, setSelectedPlaylist] = useState<PCPlaylist | null>(null);
 
+  // Spotify State
+  const [spotifyStatus, setSpotifyStatus] = useState<SpotifyStatus>({ connected: false });
+  const [spotifyPlaylists, setSpotifyPlaylists] = useState<SpotifyPlaylistInfo[]>([]);
+  const [selectedSpotifyPlaylist, setSelectedSpotifyPlaylist] = useState<SpotifyPlaylistInfo | null>(null);
+  const [spotifyModalVisible, setSpotifyModalVisible] = useState(false);
+  const [spotifyRefreshing, setSpotifyRefreshing] = useState(false);
+
   // Library subtab
   const [librarySubTab, setLibrarySubTab] = useState<"playlists" | "liked" | "queue">("playlists");
 
@@ -185,6 +198,10 @@ function MainContent() {
         setFullPlayerVisible(false);
         return true;
       }
+      if (selectedSpotifyPlaylist) {
+        setSelectedSpotifyPlaylist(null);
+        return true;
+      }
       if (selectedPlaylist) {
         setSelectedPlaylist(null);
         return true;
@@ -198,7 +215,7 @@ function MainContent() {
 
     const sub = BackHandler.addEventListener("hardwareBackPress", onBackPress);
     return () => sub.remove();
-  }, [fullPlayerVisible, selectedPlaylist, activeTab]);
+  }, [fullPlayerVisible, selectedSpotifyPlaylist, selectedPlaylist, activeTab]);
 
   // Wire up Native Audio engine listeners for standalone Phone playback
   useEffect(() => {
@@ -244,6 +261,15 @@ function MainContent() {
     }
   }, [playbackTarget, playerState.playing, playerState.duration]);
 
+  // Subscribe to Spotify service changes
+  useEffect(() => {
+    const unsubSpotify = spotifyService.subscribe((status) => {
+      setSpotifyStatus(status);
+      setSpotifyPlaylists(spotifyService.getPlaylists());
+    });
+    return unsubSpotify;
+  }, []);
+
   // Initialize storage, offline downloads, favorites, and PC connection
   useEffect(() => {
     let cleanupWs: (() => void) | null = null;
@@ -272,12 +298,12 @@ function MainContent() {
           fetchPCLibrary().then((lib) => {
             if (lib?.playlists) setPcPlaylists(lib.playlists);
           });
+          spotifyService.refreshPlaylists();
         }
       });
 
       cleanupWs = connectWebSocket(
         (newState) => {
-          // Sync PC player state when in PC mode
           if (playbackTargetRef.current === "pc") {
             setPlayerState((prev) => ({ ...prev, ...newState }));
           }
@@ -289,6 +315,7 @@ function MainContent() {
             fetchPCLibrary().then((lib) => {
               if (lib?.playlists) setPcPlaylists(lib.playlists);
             });
+            spotifyService.refreshPlaylists();
           }
         },
         (lib: RemoteLibraryState) => {
@@ -309,6 +336,19 @@ function MainContent() {
       if (cleanupWs) cleanupWs();
     };
   }, []);
+
+  const handleRefreshSpotify = async () => {
+    if (spotifyRefreshing) return;
+    setSpotifyRefreshing(true);
+    try {
+      const lists = await spotifyService.refreshPlaylists();
+      setSpotifyPlaylists(lists);
+    } catch (e) {
+      console.warn("Spotify refresh error:", e);
+    } finally {
+      setSpotifyRefreshing(false);
+    }
+  };
 
   // Search input handler with 350ms debounce
   const handleQueryChange = (text: string) => {
@@ -372,7 +412,7 @@ function MainContent() {
     }));
 
     if (playbackTarget === "phone" || !connected) {
-      // Standalone phone playback via expo-av
+      // Standalone phone playback via expo-audio
       const streamUrl = await resolveAudioStream(track.id);
       if (streamUrl) {
         await nativeAudio.play(streamUrl);
@@ -517,7 +557,7 @@ function MainContent() {
       {/* Top Header Bar */}
       <View style={styles.header}>
         <View style={styles.brandRow}>
-          <FTuneLogo size={24} color="#ffffff" />
+          <FTuneLogo size={24} color={Colors.inkHi} />
           <Text style={styles.brandName}>FTune</Text>
         </View>
 
@@ -533,7 +573,7 @@ function MainContent() {
           >
             <Smartphone
               size={13}
-              color={playbackTarget === "phone" ? "#ffffff" : Colors.textMuted}
+              color={playbackTarget === "phone" ? Colors.inkHi : Colors.inkDim}
             />
             <Text
               style={[
@@ -567,7 +607,7 @@ function MainContent() {
             />
             <Laptop
               size={13}
-              color={playbackTarget === "pc" ? "#ffffff" : Colors.textMuted}
+              color={playbackTarget === "pc" ? Colors.inkHi : Colors.inkDim}
             />
             <Text
               style={[
@@ -583,7 +623,7 @@ function MainContent() {
 
       {/* Main Tab Content */}
       <View style={styles.contentArea}>
-        {/* HOME TAB */}
+        {/* 1. HOME TAB */}
         {activeTab === "home" && (
           <ScrollView
             showsVerticalScrollIndicator={false}
@@ -630,6 +670,32 @@ function MainContent() {
               ))}
             </ScrollView>
 
+            {/* Spotify Highlight Banner on Home */}
+            <View style={{ paddingHorizontal: 16, marginTop: 24 }}>
+              <AmbientGlow color={Colors.spotifyGlow} intensity={0.25}>
+                <TouchableOpacity
+                  style={styles.spotifyHomeBanner}
+                  activeOpacity={0.85}
+                  onPress={() => setActiveTab("spotify")}
+                >
+                  <View style={styles.spotifyHomeIconWrap}>
+                    <SpotifyIcon size={28} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.spotifyHomeTitle}>
+                      {spotifyStatus.connected ? "Spotify Connected" : "Connect Spotify"}
+                    </Text>
+                    <Text style={styles.spotifyHomeSubtitle} numberOfLines={1}>
+                      {spotifyStatus.connected
+                        ? `Tap to stream your playlists and Liked Songs`
+                        : "Import playlists and play from YouTube Music"}
+                    </Text>
+                  </View>
+                  <ChevronRight size={20} color={SPOTIFY_GREEN} />
+                </TouchableOpacity>
+              </AmbientGlow>
+            </View>
+
             {/* Mood Chips */}
             <View style={[styles.sectionHeaderRow, { marginTop: 24 }]}>
               <Text style={styles.sectionTitle}>Moods & Genres</Text>
@@ -650,23 +716,23 @@ function MainContent() {
           </ScrollView>
         )}
 
-        {/* SEARCH TAB */}
+        {/* 2. SEARCH TAB */}
         {activeTab === "search" && (
           <View style={styles.searchContainer}>
             {/* Search Input Bar */}
             <View style={styles.searchBar}>
-              <Search size={18} color={Colors.textMuted} style={styles.searchIcon} />
+              <Search size={18} color={Colors.inkDim} style={styles.searchIcon} />
               <TextInput
                 style={styles.searchInput}
                 placeholder="Search songs, artists, albums..."
-                placeholderTextColor={Colors.textMuted}
+                placeholderTextColor={Colors.inkDim}
                 value={query}
                 onChangeText={handleQueryChange}
                 autoCorrect={false}
               />
               {query.length > 0 && (
                 <TouchableOpacity onPress={() => handleQueryChange("")} style={styles.clearBtn}>
-                  <X size={16} color={Colors.textSecondary} />
+                  <X size={16} color={Colors.inkHi} />
                 </TouchableOpacity>
               )}
             </View>
@@ -700,7 +766,7 @@ function MainContent() {
             {/* Results List */}
             {loading ? (
               <View style={styles.centerState}>
-                <ActivityIndicator size="large" color="#ffffff" />
+                <ActivityIndicator size="large" color={Colors.inkHi} />
                 <Text style={styles.loadingText}>Searching YouTube Music...</Text>
               </View>
             ) : results.length > 0 ? (
@@ -731,7 +797,189 @@ function MainContent() {
           </View>
         )}
 
-        {/* LIBRARY / PLAYLISTS TAB */}
+        {/* 3. SPOTIFY TAB (NEW) */}
+        {activeTab === "spotify" && (
+          selectedSpotifyPlaylist ? (
+            <SpotifyMatchedView
+              playlistInfo={selectedSpotifyPlaylist}
+              currentTrackId={playerState.currentTrack?.id}
+              isPlaying={playerState.playing}
+              onBack={() => setSelectedSpotifyPlaylist(null)}
+              onPlaySong={(t, q, idx) => handlePlaySong(t, q, idx)}
+              onToggleFavorite={handleToggleFavorite}
+              isFavorite={(id) => favorites.some((f) => f.id === id)}
+            />
+          ) : (
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={styles.spotifyScrollContent}
+            >
+              {/* Header Row */}
+              <View style={styles.spotifyHeaderRow}>
+                <View style={{ flex: 1 }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                    <SpotifyIcon size={26} />
+                    <Text style={styles.spotifyPageTitle}>Spotify</Text>
+                  </View>
+                  <Text style={styles.spotifyPageSubtitle}>
+                    {spotifyStatus.connected
+                      ? `Connected as ${spotifyStatus.name || "Listener"}`
+                      : "Stream your Spotify playlists and Liked Songs"}
+                  </Text>
+                </View>
+
+                {spotifyStatus.connected ? (
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                    <SpringTouchable
+                      style={styles.refreshPillBtn}
+                      onPress={handleRefreshSpotify}
+                      disabled={spotifyRefreshing}
+                    >
+                      <RefreshCw
+                        size={14}
+                        color={Colors.inkHi}
+                        style={{ marginRight: 6 }}
+                      />
+                      <Text style={styles.refreshPillText}>
+                        {spotifyRefreshing ? "Refreshing..." : "Refresh"}
+                      </Text>
+                    </SpringTouchable>
+
+                    <TouchableOpacity
+                      style={styles.disconnectBtn}
+                      onPress={() => {
+                        Alert.alert("Disconnect Spotify", "Are you sure you want to disconnect Spotify?", [
+                          { text: "Cancel", style: "cancel" },
+                          { text: "Disconnect", style: "destructive", onPress: () => spotifyService.disconnect() },
+                        ]);
+                      }}
+                    >
+                      <X size={16} color={Colors.inkDim} />
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <SpringTouchable
+                    style={styles.connectTopBtn}
+                    onPress={() => setSpotifyModalVisible(true)}
+                  >
+                    <Text style={styles.connectTopBtnText}>Sign In</Text>
+                  </SpringTouchable>
+                )}
+              </View>
+
+              {/* Not Connected State */}
+              {!spotifyStatus.connected && (
+                <AmbientGlow color={Colors.spotifyGlow} intensity={0.3} style={{ marginHorizontal: 16, marginBottom: 20 }}>
+                  <View style={styles.spotifyHeroCard}>
+                    <SpotifyIcon size={48} />
+                    <Text style={styles.spotifyHeroTitle}>Connect Spotify</Text>
+                    <Text style={styles.spotifyHeroDesc}>
+                      Sign in to Spotify in a sheet of its own, and your playlists and Liked Songs show up here, played from YouTube Music.
+                    </Text>
+                    <SpringTouchable
+                      style={styles.connectFab}
+                      onPress={() => setSpotifyModalVisible(true)}
+                    >
+                      <Text style={styles.connectFabText}>Connect Spotify</Text>
+                    </SpringTouchable>
+                  </View>
+                </AmbientGlow>
+              )}
+
+              {/* Connected: Liked Songs & Playlists */}
+              {spotifyStatus.connected && (
+                <View style={{ paddingHorizontal: 16 }}>
+                  {/* Liked Songs Special Card */}
+                  <SpringTouchable
+                    style={styles.likedHeroCard}
+                    activeScale={0.97}
+                    onPress={() =>
+                      setSelectedSpotifyPlaylist({
+                        id: LIKED_ID,
+                        name: "Liked Songs",
+                        thumb: LIKED_SLEEVE,
+                      })
+                    }
+                  >
+                    <View style={styles.likedArtWrapper}>
+                      <Image source={{ uri: LIKED_SLEEVE }} style={styles.likedArt} />
+                      <View style={styles.likedArtHeart}>
+                        <Heart size={20} color="#ffffff" fill="#ffffff" />
+                      </View>
+                    </View>
+                    <View style={styles.likedHeroInfo}>
+                      <View style={styles.likedBadge}>
+                        <Text style={styles.likedBadgeText}>SPOTIFY</Text>
+                      </View>
+                      <Text style={styles.likedTitle}>Liked Songs</Text>
+                      <Text style={styles.likedSubtitle}>Your Spotify Liked Songs collection</Text>
+                    </View>
+                    <ChevronRight size={20} color={Colors.inkDim} />
+                  </SpringTouchable>
+
+                  {/* Playlists Section */}
+                  <View style={{ marginTop: 22 }}>
+                    <Text style={styles.sectionTitle}>Playlists</Text>
+
+                    {spotifyPlaylists.filter((p) => p.id !== LIKED_ID).length > 0 ? (
+                      spotifyPlaylists
+                        .filter((p) => p.id !== LIKED_ID)
+                        .map((playlist) => (
+                          <TouchableOpacity
+                            key={playlist.id}
+                            style={styles.playlistRow}
+                            activeOpacity={0.7}
+                            onPress={() => setSelectedSpotifyPlaylist(playlist)}
+                          >
+                            <View style={styles.playlistThumbWrapper}>
+                              {playlist.thumb ? (
+                                <Image source={{ uri: playlist.thumb }} style={styles.playlistThumb} />
+                              ) : (
+                                <ListMusic size={22} color={Colors.inkDim} />
+                              )}
+                            </View>
+                            <View style={styles.playlistInfo}>
+                              <Text style={styles.playlistTitle} numberOfLines={1}>
+                                {playlist.name}
+                              </Text>
+                              <Text style={styles.playlistMeta}>
+                                {playlist.owner ? `By ${playlist.owner}` : "Playlist"} • {playlist.total || 0} songs
+                              </Text>
+                            </View>
+                            <ChevronRight size={18} color={Colors.inkDim} />
+                          </TouchableOpacity>
+                        ))
+                    ) : (
+                      <View style={styles.centerState}>
+                        <Text style={[styles.emptySubtitle, { marginTop: 16 }]}>
+                          No custom Spotify playlists found.
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                </View>
+              )}
+
+              {/* Import Link Banner */}
+              <View style={styles.importBanner}>
+                <View style={{ flex: 1, marginRight: 12 }}>
+                  <Text style={styles.importBannerTitle}>Have a Spotify link?</Text>
+                  <Text style={styles.importBannerDesc}>
+                    Import any public playlist or album URL without signing in.
+                  </Text>
+                </View>
+                <SpringTouchable
+                  style={styles.importBannerBtn}
+                  onPress={() => setSpotifyModalVisible(true)}
+                >
+                  <Text style={styles.importBannerBtnText}>Import</Text>
+                </SpringTouchable>
+              </View>
+            </ScrollView>
+          )
+        )}
+
+        {/* 4. LIBRARY / PLAYLISTS TAB */}
         {activeTab === "library" && (
           selectedPlaylist ? (
             <PlaylistDetailView
@@ -819,7 +1067,7 @@ function MainContent() {
                             {firstArt ? (
                               <Image source={{ uri: firstArt }} style={styles.playlistThumb} />
                             ) : (
-                              <ListMusic size={22} color={Colors.textMuted} />
+                              <ListMusic size={22} color={Colors.inkDim} />
                             )}
                           </View>
                           <View style={styles.playlistInfo}>
@@ -830,7 +1078,7 @@ function MainContent() {
                               Playlist • {item.tracks?.length || 0} songs
                             </Text>
                           </View>
-                          <ChevronRight size={18} color={Colors.textMuted} />
+                          <ChevronRight size={18} color={Colors.inkDim} />
                         </TouchableOpacity>
                       );
                     }}
@@ -910,7 +1158,7 @@ function MainContent() {
           )
         )}
 
-        {/* OFFLINE DOWNLOADS TAB */}
+        {/* 5. OFFLINE DOWNLOADS TAB */}
         {activeTab === "offline" && (
           <View style={styles.queueContainer}>
             <View style={styles.offlineHeader}>
@@ -943,7 +1191,7 @@ function MainContent() {
                       onPress={() => handleDeleteDownloaded(item.id)}
                       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                     >
-                      <Trash2 size={16} color={Colors.textMuted} />
+                      <Trash2 size={16} color={Colors.inkDim} />
                     </TouchableOpacity>
                   </View>
                 )}
@@ -971,11 +1219,12 @@ function MainContent() {
         onPress={() => setFullPlayerVisible(true)}
       />
 
-      {/* 4-Tab Bottom Navigation Bar */}
+      {/* 5-Tab Bottom Navigation Bar */}
       <BottomNavBar
         activeTab={activeTab}
         onSelectTab={(tab) => {
           setSelectedPlaylist(null);
+          setSelectedSpotifyPlaylist(null);
           setActiveTab(tab);
         }}
         bottomInset={insets.bottom}
@@ -1018,6 +1267,17 @@ function MainContent() {
           fetchPCLibrary().then((lib) => {
             if (lib?.playlists) setPcPlaylists(lib.playlists);
           });
+          spotifyService.refreshPlaylists();
+        }}
+      />
+
+      {/* In-App Spotify Login & Import Modal */}
+      <SpotifyLoginModal
+        visible={spotifyModalVisible}
+        onClose={() => setSpotifyModalVisible(false)}
+        onSuccess={() => {
+          setSpotifyStatus(spotifyService.getStatus());
+          setSpotifyPlaylists(spotifyService.getPlaylists());
         }}
       />
     </View>
@@ -1035,7 +1295,7 @@ export default function App() {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: "#000000",
+    backgroundColor: Colors.base,
   },
   header: {
     flexDirection: "row",
@@ -1050,17 +1310,17 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   brandName: {
-    fontSize: 19,
+    fontSize: 20,
     fontWeight: "800",
-    color: "#ffffff",
+    color: Colors.inkHi,
     letterSpacing: -0.5,
   },
   modeSwitcher: {
     flexDirection: "row",
-    backgroundColor: "#16161c",
+    backgroundColor: Colors.panel,
     borderRadius: 20,
     borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.1)",
+    borderColor: Colors.hairline,
     padding: 2,
   },
   targetBtn: {
@@ -1077,10 +1337,10 @@ const styles = StyleSheet.create({
   targetBtnText: {
     fontSize: 11,
     fontWeight: "600",
-    color: Colors.textMuted,
+    color: Colors.inkDim,
   },
   targetBtnTextActive: {
-    color: "#ffffff",
+    color: Colors.inkHi,
     fontWeight: "700",
   },
   statusDot: {
@@ -1106,14 +1366,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 7,
     borderRadius: 8,
-    backgroundColor: "rgba(255, 255, 255, 0.05)",
+    backgroundColor: "rgba(255, 255, 255, 0.04)",
     borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.08)",
+    borderColor: Colors.hairline,
   },
   bannerText: {
     fontSize: 11.5,
     fontWeight: "500",
-    color: Colors.textSecondary,
+    color: Colors.inkDim,
     textAlign: "center",
   },
   sectionHeaderRow: {
@@ -1122,9 +1382,9 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   sectionTitle: {
-    fontSize: 19,
+    fontSize: 20,
     fontWeight: "800",
-    color: "#ffffff",
+    color: Colors.inkHi,
     letterSpacing: -0.3,
   },
   quickGrid: {
@@ -1138,6 +1398,34 @@ const styles = StyleSheet.create({
   shelfScroll: {
     paddingLeft: 16,
   },
+  spotifyHomeBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: Colors.panel,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: Colors.hairline,
+    padding: 14,
+    gap: 12,
+  },
+  spotifyHomeIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "rgba(30, 215, 96, 0.15)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  spotifyHomeTitle: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: Colors.inkHi,
+    marginBottom: 2,
+  },
+  spotifyHomeSubtitle: {
+    fontSize: 12,
+    color: Colors.inkDim,
+  },
   moodsWrap: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -1148,14 +1436,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: 20,
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    backgroundColor: Colors.panel,
     borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.08)",
+    borderColor: Colors.hairline,
   },
   moodChipText: {
     fontSize: 12.5,
     fontWeight: "600",
-    color: "#ffffff",
+    color: Colors.inkHi,
   },
   searchContainer: {
     flex: 1,
@@ -1163,21 +1451,21 @@ const styles = StyleSheet.create({
   searchBar: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#16161c",
+    backgroundColor: Colors.panel,
     marginHorizontal: 16,
     marginVertical: 8,
     borderRadius: 24,
     paddingHorizontal: 14,
     height: 44,
     borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.1)",
+    borderColor: Colors.hairline,
   },
   searchIcon: {
     marginRight: 8,
   },
   searchInput: {
     flex: 1,
-    color: "#ffffff",
+    color: Colors.inkHi,
     fontSize: 14,
   },
   clearBtn: {
@@ -1194,18 +1482,21 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 6,
     borderRadius: 16,
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    backgroundColor: Colors.panel,
+    borderWidth: 1,
+    borderColor: Colors.hairline,
   },
   activeChip: {
-    backgroundColor: "#ffffff",
+    backgroundColor: Colors.inkHi,
+    borderColor: Colors.inkHi,
   },
   chipText: {
     fontSize: 12,
     fontWeight: "600",
-    color: Colors.textSecondary,
+    color: Colors.inkDim,
   },
   activeChipText: {
-    color: "#000000",
+    color: Colors.onPrimary,
     fontWeight: "700",
   },
   centerState: {
@@ -1215,22 +1506,204 @@ const styles = StyleSheet.create({
     paddingHorizontal: 32,
   },
   loadingText: {
-    color: Colors.textSecondary,
+    color: Colors.inkDim,
     fontSize: 13,
     marginTop: 12,
   },
   emptyTitle: {
     fontSize: 17,
     fontWeight: "700",
-    color: "#ffffff",
+    color: Colors.inkHi,
     marginTop: 16,
     marginBottom: 6,
   },
   emptySubtitle: {
     fontSize: 13,
-    color: Colors.textMuted,
+    color: Colors.inkDim,
     textAlign: "center",
     lineHeight: 18,
+  },
+  spotifyScrollContent: {
+    paddingBottom: 40,
+  },
+  spotifyHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+  },
+  spotifyPageTitle: {
+    fontSize: 24,
+    fontWeight: "800",
+    color: Colors.inkHi,
+    letterSpacing: -0.4,
+  },
+  spotifyPageSubtitle: {
+    fontSize: 12.5,
+    color: Colors.inkDim,
+    marginTop: 3,
+  },
+  refreshPillBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: Colors.panel,
+    borderWidth: 1,
+    borderColor: Colors.hairline,
+    borderRadius: 999,
+    paddingVertical: 7,
+    paddingHorizontal: 14,
+  },
+  refreshPillText: {
+    fontSize: 12.5,
+    fontWeight: "600",
+    color: Colors.inkHi,
+  },
+  disconnectBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: Colors.panel,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  connectTopBtn: {
+    backgroundColor: Colors.inkHi,
+    borderRadius: 999,
+    paddingVertical: 8,
+    paddingHorizontal: 18,
+  },
+  connectTopBtnText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: Colors.onPrimary,
+  },
+  spotifyHeroCard: {
+    backgroundColor: Colors.surface,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: Colors.hairline,
+    padding: 24,
+    alignItems: "center",
+  },
+  spotifyHeroTitle: {
+    fontSize: 21,
+    fontWeight: "800",
+    color: Colors.inkHi,
+    marginTop: 14,
+    marginBottom: 8,
+  },
+  spotifyHeroDesc: {
+    fontSize: 13,
+    color: Colors.inkDim,
+    textAlign: "center",
+    lineHeight: 19,
+    marginBottom: 20,
+  },
+  connectFab: {
+    backgroundColor: Colors.primary,
+    borderRadius: 999,
+    paddingVertical: 12,
+    paddingHorizontal: 32,
+  },
+  connectFabText: {
+    fontSize: 14.5,
+    fontWeight: "700",
+    color: Colors.onPrimary,
+  },
+  likedHeroCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: Colors.panel,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: Colors.hairline,
+    padding: 12,
+  },
+  likedArtWrapper: {
+    position: "relative",
+    width: 60,
+    height: 60,
+    borderRadius: 10,
+    overflow: "hidden",
+    marginRight: 14,
+    backgroundColor: Colors.surface,
+  },
+  likedArt: {
+    width: "100%",
+    height: "100%",
+  },
+  likedArtHeart: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "rgba(30, 215, 96, 0.4)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  likedHeroInfo: {
+    flex: 1,
+  },
+  likedBadge: {
+    alignSelf: "flex-start",
+    backgroundColor: "rgba(30, 215, 96, 0.15)",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    marginBottom: 4,
+  },
+  likedBadgeText: {
+    fontSize: 9.5,
+    fontWeight: "800",
+    color: SPOTIFY_GREEN,
+    letterSpacing: 0.6,
+  },
+  likedTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: Colors.inkHi,
+    marginBottom: 2,
+  },
+  likedSubtitle: {
+    fontSize: 12,
+    color: Colors.inkDim,
+  },
+  importBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: Colors.panel,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: Colors.hairline,
+    marginHorizontal: 16,
+    marginTop: 24,
+    padding: 16,
+  },
+  importBannerTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: Colors.inkHi,
+    marginBottom: 2,
+  },
+  importBannerDesc: {
+    fontSize: 12,
+    color: Colors.inkDim,
+  },
+  importBannerBtn: {
+    backgroundColor: Colors.elevated,
+    borderRadius: 999,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+  },
+  importBannerBtnText: {
+    fontSize: 12.5,
+    fontWeight: "700",
+    color: Colors.inkHi,
   },
   queueContainer: {
     flex: 1,
@@ -1238,8 +1711,8 @@ const styles = StyleSheet.create({
   subtabRow: {
     flexDirection: "row",
     paddingHorizontal: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: "rgba(255, 255, 255, 0.08)",
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: Colors.hairline,
     marginBottom: 8,
   },
   subtabBtn: {
@@ -1249,15 +1722,15 @@ const styles = StyleSheet.create({
     borderBottomColor: "transparent",
   },
   subtabBtnActive: {
-    borderBottomColor: "#ffffff",
+    borderBottomColor: Colors.inkHi,
   },
   subtabText: {
     fontSize: 13,
     fontWeight: "600",
-    color: Colors.textMuted,
+    color: Colors.inkDim,
   },
   subtabTextActive: {
-    color: "#ffffff",
+    color: Colors.inkHi,
     fontWeight: "700",
   },
   playlistRow: {
@@ -1265,19 +1738,19 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingVertical: 10,
     paddingHorizontal: 16,
-    borderBottomWidth: 1,
+    borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "rgba(255, 255, 255, 0.04)",
   },
   playlistThumbWrapper: {
     width: 48,
     height: 48,
     borderRadius: 8,
-    backgroundColor: "#1a1a22",
+    backgroundColor: Colors.panel,
     alignItems: "center",
     justifyContent: "center",
     overflow: "hidden",
     borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.08)",
+    borderColor: Colors.artworkBorder,
   },
   playlistThumb: {
     width: "100%",
@@ -1290,12 +1763,12 @@ const styles = StyleSheet.create({
   playlistTitle: {
     fontSize: 14.5,
     fontWeight: "700",
-    color: "#ffffff",
+    color: Colors.inkHi,
     marginBottom: 3,
   },
   playlistMeta: {
     fontSize: 12,
-    color: Colors.textMuted,
+    color: Colors.inkDim,
   },
   offlineHeader: {
     flexDirection: "row",
@@ -1303,18 +1776,18 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     paddingHorizontal: 16,
     paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: "rgba(255, 255, 255, 0.08)",
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: Colors.hairline,
   },
   offlineTitle: {
     fontSize: 18,
     fontWeight: "800",
-    color: "#ffffff",
+    color: Colors.inkHi,
     letterSpacing: -0.3,
   },
   offlineSubtitle: {
     fontSize: 12,
-    color: Colors.textMuted,
+    color: Colors.inkDim,
     marginTop: 2,
   },
   downloadRowWrapper: {

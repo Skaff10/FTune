@@ -101,3 +101,41 @@ export interface DownloadItem {
   fileSize: number;
   downloadedAt: number;
 }
+
+export interface SpotifyStatus {
+  connected: boolean;
+  name?: string;
+  problem?: string;
+}
+
+export interface SpotifyPlaylistInfo {
+  id: string;
+  name: string;
+  owner?: string;
+  thumb?: string;
+  total?: number;
+}
+
+export interface ImportSong {
+  spotifyId?: string;
+  title: string;
+  artist: string;
+  album?: string;
+  duration: number;
+  thumb?: string;
+  explicit?: boolean;
+}
+
+export interface ImportedPlaylist {
+  name: string;
+  owner?: string;
+  total: number;
+  thumb?: string;
+  songs: ImportSong[];
+}
+
+export interface SongMatch {
+  spotifyId: string;
+  matchedTrack: Track | null;
+  status: "idle" | "matching" | "matched" | "missing";
+}

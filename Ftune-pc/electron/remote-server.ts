@@ -2,6 +2,7 @@ import * as http from "http";
 import * as os from "os";
 import { WebSocketServer, WebSocket } from "ws";
 import * as music from "./music-service";
+import * as spotify from "./spotify";
 import type { Track } from "../src/types";
 
 export interface RemotePlayerState {
@@ -320,6 +321,78 @@ export class RemoteServer {
           return;
         }
         await this.streamAudioTrack(id, req, res);
+        return;
+      }
+
+      // 13. Spotify Status
+      if (pathname === "/api/spotify/status" && req.method === "GET") {
+        const status = spotify.spotifyStatus();
+        this.sendJson(res, 200, status);
+        return;
+      }
+
+      // 14. Spotify Playlists
+      if (pathname === "/api/spotify/playlists" && req.method === "GET") {
+        try {
+          const playlists = await spotify.spotifyPlaylists();
+          this.sendJson(res, 200, { playlists });
+        } catch (err: any) {
+          this.sendJson(res, 500, { error: err?.message || "Failed to load Spotify playlists" });
+        }
+        return;
+      }
+
+      // 15. Spotify Playlist Tracks
+      if (pathname === "/api/spotify/playlist" && req.method === "GET") {
+        const id = url.searchParams.get("id");
+        if (!id) {
+          this.sendJson(res, 400, { error: "Missing playlist id" });
+          return;
+        }
+        try {
+          const playlist = await spotify.spotifyPlaylist(id);
+          this.sendJson(res, 200, playlist);
+        } catch (err: any) {
+          this.sendJson(res, 500, { error: err?.message || "Failed to load Spotify playlist tracks" });
+        }
+        return;
+      }
+
+      // 16. Spotify Public Playlist
+      if (pathname === "/api/spotify/public" && req.method === "GET") {
+        const link = url.searchParams.get("link");
+        if (!link) {
+          this.sendJson(res, 400, { error: "Missing playlist link" });
+          return;
+        }
+        try {
+          const playlist = await spotify.publicPlaylist(link);
+          this.sendJson(res, 200, playlist);
+        } catch (err: any) {
+          this.sendJson(res, 500, { error: err?.message || "Failed to parse public Spotify playlist" });
+        }
+        return;
+      }
+
+      // 17. Spotify Connect Trigger
+      if (pathname === "/api/spotify/connect" && req.method === "POST") {
+        try {
+          const status = await spotify.connectSpotify(null);
+          this.sendJson(res, 200, status);
+        } catch (err: any) {
+          this.sendJson(res, 500, { error: err?.message || "Failed to connect Spotify" });
+        }
+        return;
+      }
+
+      // 18. Spotify Disconnect
+      if (pathname === "/api/spotify/disconnect" && req.method === "POST") {
+        try {
+          await spotify.disconnectSpotify();
+          this.sendJson(res, 200, spotify.spotifyStatus());
+        } catch (err: any) {
+          this.sendJson(res, 500, { error: err?.message || "Failed to disconnect Spotify" });
+        }
         return;
       }
 

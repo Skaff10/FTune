@@ -9,11 +9,12 @@ import {
   BackHandler,
   ActivityIndicator,
 } from "react-native";
-import { ChevronLeft, Play, Download, Check } from "lucide-react-native";
+import { ChevronLeft, Play, Download } from "lucide-react-native";
 import { Colors } from "../theme/colors";
 import type { PCPlaylist, Track } from "../types";
 import { SongRow } from "./SongRow";
 import { downloadTrack, isTrackDownloaded } from "../services/downloadManager";
+import { SpringTouchable, AmbientGlow } from "./AnimatedComponents";
 
 interface PlaylistDetailViewProps {
   playlist: PCPlaylist;
@@ -75,54 +76,57 @@ export const PlaylistDetailView: React.FC<PlaylistDetailViewProps> = ({
           onPress={onBack}
           hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
         >
-          <ChevronLeft size={28} color="#ffffff" />
+          <ChevronLeft size={24} color={Colors.inkHi} />
           <Text style={styles.backText}>Library</Text>
         </TouchableOpacity>
       </View>
 
       {/* Hero Header */}
-      <View style={styles.hero}>
-        <Image source={{ uri: firstCover }} style={styles.heroCover} />
-        <View style={styles.heroInfo}>
-          <Text style={styles.playlistType}>PLAYLIST</Text>
-          <Text style={styles.playlistName} numberOfLines={2}>
-            {playlist.name}
-          </Text>
-          <Text style={styles.trackCount}>{tracks.length} songs</Text>
+      <AmbientGlow color="rgba(255, 255, 255, 0.05)" intensity={0.15}>
+        <View style={styles.hero}>
+          <Image source={{ uri: firstCover }} style={styles.heroCover} />
+          <View style={styles.heroInfo}>
+            <Text style={styles.playlistType}>PLAYLIST</Text>
+            <Text style={styles.playlistName} numberOfLines={2}>
+              {playlist.name}
+            </Text>
+            <Text style={styles.trackCount}>{tracks.length} songs</Text>
+          </View>
         </View>
-      </View>
+      </AmbientGlow>
 
       {/* Action Buttons: Play All & Download Playlist */}
       <View style={styles.actionsBar}>
-        <TouchableOpacity
+        <SpringTouchable
           style={styles.playAllBtn}
           onPress={() => onPlayAll(tracks)}
           disabled={tracks.length === 0}
-          activeOpacity={0.85}
+          activeScale={0.95}
         >
           <Play size={18} color="#000000" fill="#000000" style={{ marginRight: 6 }} />
           <Text style={styles.playAllText}>Play All</Text>
-        </TouchableOpacity>
+        </SpringTouchable>
 
-        <TouchableOpacity
+        <SpringTouchable
           style={styles.downloadAllBtn}
           onPress={handleDownloadAll}
           disabled={downloadingAll || tracks.length === 0}
+          activeScale={0.95}
         >
           {downloadingAll ? (
             <>
-              <ActivityIndicator size="small" color="#ffffff" style={{ marginRight: 6 }} />
+              <ActivityIndicator size="small" color={Colors.inkHi} style={{ marginRight: 6 }} />
               <Text style={styles.downloadAllText}>
                 {downloadedCount}/{tracks.length}
               </Text>
             </>
           ) : (
             <>
-              <Download size={18} color="#ffffff" style={{ marginRight: 6 }} />
+              <Download size={18} color={Colors.inkHi} style={{ marginRight: 6 }} />
               <Text style={styles.downloadAllText}>Download</Text>
             </>
           )}
-        </TouchableOpacity>
+        </SpringTouchable>
       </View>
 
       {/* Tracks List */}
@@ -147,7 +151,7 @@ export const PlaylistDetailView: React.FC<PlaylistDetailViewProps> = ({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#000000",
+    backgroundColor: Colors.base,
   },
   header: {
     paddingHorizontal: 16,
@@ -159,7 +163,7 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   backText: {
-    color: "#ffffff",
+    color: Colors.inkHi,
     fontSize: 16,
     fontWeight: "600",
   },
@@ -167,72 +171,74 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 14,
     gap: 16,
   },
   heroCover: {
     width: 110,
     height: 110,
-    borderRadius: 10,
-    backgroundColor: Colors.surfaceCard,
+    borderRadius: 12,
+    backgroundColor: Colors.panel,
     borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.12)",
+    borderColor: Colors.artworkBorder,
   },
   heroInfo: {
     flex: 1,
+    justifyContent: "center",
   },
   playlistType: {
-    fontSize: 10,
-    fontWeight: "800",
-    color: Colors.textMuted,
-    letterSpacing: 1.2,
+    fontSize: 11,
+    fontWeight: "700",
+    color: Colors.inkDim,
+    letterSpacing: 1,
     marginBottom: 4,
   },
   playlistName: {
-    fontSize: 20,
+    fontSize: 22,
     fontWeight: "800",
-    color: "#ffffff",
-    letterSpacing: -0.3,
+    color: Colors.inkHi,
+    letterSpacing: -0.4,
     marginBottom: 6,
   },
   trackCount: {
     fontSize: 13,
-    color: Colors.textSecondary,
+    color: Colors.inkDim,
   },
   actionsBar: {
     flexDirection: "row",
     alignItems: "center",
+    gap: 12,
     paddingHorizontal: 16,
     paddingVertical: 12,
-    gap: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: Colors.hairline,
   },
   playAllBtn: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#ffffff",
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 24,
+    backgroundColor: Colors.primary,
+    paddingHorizontal: 22,
+    paddingVertical: 11,
+    borderRadius: 999,
   },
   playAllText: {
-    color: "#000000",
+    color: Colors.onPrimary,
     fontSize: 14,
     fontWeight: "700",
   },
   downloadAllBtn: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.1)",
-    paddingHorizontal: 18,
-    paddingVertical: 10,
-    borderRadius: 24,
+    backgroundColor: Colors.panel,
     borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.12)",
+    borderColor: Colors.hairline,
+    paddingHorizontal: 18,
+    paddingVertical: 11,
+    borderRadius: 999,
   },
   downloadAllText: {
-    color: "#ffffff",
+    color: Colors.inkHi,
     fontSize: 14,
     fontWeight: "600",
   },
 });
-

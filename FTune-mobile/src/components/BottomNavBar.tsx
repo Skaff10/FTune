@@ -2,8 +2,9 @@ import React from "react";
 import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
 import { Home, Search, Library, Download } from "lucide-react-native";
 import { Colors } from "../theme/colors";
+import { SpotifyIcon, SPOTIFY_GREEN } from "./SpotifyIcon";
 
-export type TabKey = "home" | "search" | "library" | "offline";
+export type TabKey = "home" | "search" | "spotify" | "library" | "offline";
 
 interface BottomNavBarProps {
   activeTab: TabKey;
@@ -25,7 +26,7 @@ export const BottomNavBar: React.FC<BottomNavBarProps> = ({
       >
         <Home
           size={21}
-          color={activeTab === "home" ? "#ffffff" : Colors.textMuted}
+          color={activeTab === "home" ? Colors.inkHi : Colors.inkDim}
         />
         <Text style={[styles.tabLabel, activeTab === "home" && styles.tabLabelActive]}>
           Home
@@ -39,10 +40,29 @@ export const BottomNavBar: React.FC<BottomNavBarProps> = ({
       >
         <Search
           size={21}
-          color={activeTab === "search" ? "#ffffff" : Colors.textMuted}
+          color={activeTab === "search" ? Colors.inkHi : Colors.inkDim}
         />
         <Text style={[styles.tabLabel, activeTab === "search" && styles.tabLabelActive]}>
           Search
+        </Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={styles.tab}
+        onPress={() => onSelectTab("spotify")}
+        activeOpacity={0.7}
+      >
+        <SpotifyIcon
+          size={21}
+          color={activeTab === "spotify" ? SPOTIFY_GREEN : Colors.inkDim}
+        />
+        <Text
+          style={[
+            styles.tabLabel,
+            activeTab === "spotify" && [styles.tabLabelActive, { color: SPOTIFY_GREEN }],
+          ]}
+        >
+          Spotify
         </Text>
       </TouchableOpacity>
 
@@ -53,10 +73,10 @@ export const BottomNavBar: React.FC<BottomNavBarProps> = ({
       >
         <Library
           size={21}
-          color={activeTab === "library" ? "#ffffff" : Colors.textMuted}
+          color={activeTab === "library" ? Colors.inkHi : Colors.inkDim}
         />
         <Text style={[styles.tabLabel, activeTab === "library" && styles.tabLabelActive]}>
-          Playlists
+          Library
         </Text>
       </TouchableOpacity>
 
@@ -67,7 +87,7 @@ export const BottomNavBar: React.FC<BottomNavBarProps> = ({
       >
         <Download
           size={21}
-          color={activeTab === "offline" ? "#ffffff" : Colors.textMuted}
+          color={activeTab === "offline" ? Colors.inkHi : Colors.inkDim}
         />
         <Text style={[styles.tabLabel, activeTab === "offline" && styles.tabLabelActive]}>
           Offline
@@ -80,9 +100,9 @@ export const BottomNavBar: React.FC<BottomNavBarProps> = ({
 const styles = StyleSheet.create({
   container: {
     flexDirection: "row",
-    backgroundColor: "#0d0d10",
-    borderTopWidth: 1,
-    borderTopColor: "rgba(255, 255, 255, 0.08)",
+    backgroundColor: Colors.panel,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: Colors.hairline,
     paddingTop: 8,
     justifyContent: "space-around",
     alignItems: "center",
@@ -91,16 +111,17 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     flex: 1,
-    paddingVertical: 2,
+    paddingVertical: 3,
   },
   tabLabel: {
     fontSize: 10,
     fontWeight: "600",
-    color: Colors.textMuted,
-    marginTop: 4,
+    color: Colors.inkDim,
+    marginTop: 3,
+    letterSpacing: -0.1,
   },
   tabLabelActive: {
-    color: "#ffffff",
+    color: Colors.inkHi,
     fontWeight: "700",
   },
 });

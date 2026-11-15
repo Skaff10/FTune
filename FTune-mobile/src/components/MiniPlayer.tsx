@@ -3,6 +3,7 @@ import { View, Text, Image, StyleSheet, TouchableOpacity, PanResponder } from "r
 import { Play, Pause, SkipForward, SkipBack } from "lucide-react-native";
 import { Colors } from "../theme/colors";
 import type { RemotePlayerState } from "../types";
+import { EqBars, SpringTouchable } from "./AnimatedComponents";
 
 interface MiniPlayerProps {
   playerState: RemotePlayerState;
@@ -54,7 +55,7 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
     <View style={styles.outerWrapper} {...panResponder.panHandlers}>
       <TouchableOpacity
         style={styles.card}
-        activeOpacity={0.9}
+        activeOpacity={0.92}
         onPress={onPress}
       >
         {/* Sleek top progress bar */}
@@ -63,19 +64,28 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
         </View>
 
         <View style={styles.container}>
-          <Image
-            source={{
-              uri:
-                track.thumb ||
-                "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=120",
-            }}
-            style={styles.thumb}
-          />
+          <View style={styles.thumbWrapper}>
+            <Image
+              source={{
+                uri:
+                  track.thumb ||
+                  "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=120",
+              }}
+              style={styles.thumb}
+            />
+          </View>
 
           <View style={styles.infoWrapper}>
-            <Text style={styles.title} numberOfLines={1}>
-              {track.title}
-            </Text>
+            <View style={styles.titleRow}>
+              {playerState.playing && (
+                <View style={{ marginRight: 6 }}>
+                  <EqBars color={Colors.inkHi} size={11} animating={true} />
+                </View>
+              )}
+              <Text style={styles.title} numberOfLines={1}>
+                {track.title}
+              </Text>
+            </View>
             <Text style={styles.artist} numberOfLines={1}>
               {track.artist}
             </Text>
@@ -89,30 +99,27 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
                 e.stopPropagation();
                 onPrev();
               }}
-              hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
+              hitSlop={{ top: 12, bottom: 12, left: 10, right: 10 }}
             >
-              <SkipBack size={18} color="#ffffff" fill="#ffffff" />
+              <SkipBack size={17} color={Colors.inkHi} fill={Colors.inkHi} />
             </TouchableOpacity>
 
-            <TouchableOpacity
+            <SpringTouchable
               style={styles.playButton}
-              onPress={(e) => {
-                e.stopPropagation();
-                onTogglePlay();
-              }}
-              hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
+              onPress={onTogglePlay}
+              activeScale={0.9}
             >
               {playerState.playing ? (
-                <Pause size={18} color="#000000" fill="#000000" />
+                <Pause size={17} color="#000000" fill="#000000" />
               ) : (
                 <Play
-                  size={18}
+                  size={17}
                   color="#000000"
                   fill="#000000"
                   style={{ marginLeft: 2 }}
                 />
               )}
-            </TouchableOpacity>
+            </SpringTouchable>
 
             <TouchableOpacity
               style={styles.button}
@@ -120,9 +127,9 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
                 e.stopPropagation();
                 onNext();
               }}
-              hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
+              hitSlop={{ top: 12, bottom: 12, left: 10, right: 10 }}
             >
-              <SkipForward size={18} color="#ffffff" fill="#ffffff" />
+              <SkipForward size={17} color={Colors.inkHi} fill={Colors.inkHi} />
             </TouchableOpacity>
           </View>
         </View>
@@ -138,52 +145,65 @@ const styles = StyleSheet.create({
     backgroundColor: "transparent",
   },
   card: {
-    backgroundColor: "#16161a",
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.1)",
+    backgroundColor: Colors.panel,
+    borderRadius: 14,
+    borderWidth: 0.5,
+    borderColor: Colors.hairline,
     overflow: "hidden",
     shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.5,
-    shadowRadius: 10,
-    elevation: 8,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.55,
+    shadowRadius: 12,
+    elevation: 10,
   },
   progressTrack: {
     height: 2.5,
     width: "100%",
-    backgroundColor: "rgba(255, 255, 255, 0.1)",
+    backgroundColor: "rgba(255, 255, 255, 0.12)",
   },
   progressBar: {
     height: "100%",
-    backgroundColor: "#ffffff",
+    backgroundColor: Colors.inkHi,
   },
   container: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 12,
     paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  thumbWrapper: {
+    width: 44,
+    height: 44,
+    borderRadius: 8,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: Colors.artworkBorder,
+    marginRight: 10,
   },
   thumb: {
-    width: 42,
-    height: 42,
-    borderRadius: 8,
-    backgroundColor: Colors.surfaceHover,
+    width: "100%",
+    height: "100%",
+    backgroundColor: Colors.surface,
   },
   infoWrapper: {
     flex: 1,
-    marginLeft: 12,
     justifyContent: "center",
+    marginRight: 8,
+  },
+  titleRow: {
+    flexDirection: "row",
+    alignItems: "center",
   },
   title: {
-    fontSize: 13.5,
-    fontWeight: "700",
-    color: "#ffffff",
+    fontSize: 14,
+    fontWeight: "600",
+    color: Colors.inkHi,
     letterSpacing: -0.2,
+    flexShrink: 1,
   },
   artist: {
     fontSize: 12,
-    color: Colors.textSecondary,
+    color: Colors.inkDim,
     marginTop: 2,
   },
   controls: {
@@ -193,13 +213,20 @@ const styles = StyleSheet.create({
   },
   button: {
     padding: 6,
-  },
-  playButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: "#ffffff",
+    borderRadius: 20,
     alignItems: "center",
     justifyContent: "center",
+  },
+  playButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: Colors.primary,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
   },
 });

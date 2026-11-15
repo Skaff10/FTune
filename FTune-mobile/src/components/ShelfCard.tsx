@@ -1,8 +1,9 @@
 import React from "react";
-import { View, Text, Image, StyleSheet, TouchableOpacity } from "react-native";
+import { View, Text, Image, StyleSheet } from "react-native";
 import { Play } from "lucide-react-native";
 import { Colors } from "../theme/colors";
 import type { Track } from "../types";
+import { SpringTouchable } from "./AnimatedComponents";
 
 interface ShelfCardProps {
   track: Track;
@@ -11,14 +12,14 @@ interface ShelfCardProps {
 
 export const ShelfCard: React.FC<ShelfCardProps> = ({ track, onPlay }) => {
   return (
-    <TouchableOpacity style={styles.card} activeOpacity={0.7} onPress={() => onPlay(track)}>
+    <SpringTouchable style={styles.card} activeScale={0.96} onPress={() => onPlay(track)}>
       <View style={styles.artworkWrapper}>
         <Image
           source={{ uri: track.thumb || "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=240" }}
           style={styles.artwork}
         />
         <View style={styles.playOverlay}>
-          <Play size={16} color="#000000" fill="#000000" style={{ marginLeft: 2 }} />
+          <Play size={15} color="#000000" fill="#000000" style={{ marginLeft: 2 }} />
         </View>
       </View>
       <Text style={styles.title} numberOfLines={1}>
@@ -27,24 +28,25 @@ export const ShelfCard: React.FC<ShelfCardProps> = ({ track, onPlay }) => {
       <Text style={styles.artist} numberOfLines={1}>
         {track.artist}
       </Text>
-    </TouchableOpacity>
+    </SpringTouchable>
   );
 };
 
 const styles = StyleSheet.create({
   card: {
-    width: 136,
+    width: 140,
     marginRight: 14,
   },
   artworkWrapper: {
-    width: 136,
-    height: 136,
-    borderRadius: 10,
+    width: 140,
+    height: 140,
+    borderRadius: 12,
     overflow: "hidden",
     position: "relative",
-    backgroundColor: Colors.surfaceCard,
+    backgroundColor: Colors.panel,
     borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.08)",
+    borderColor: Colors.artworkBorder,
+    marginBottom: 8,
   },
   artwork: {
     width: "100%",
@@ -57,25 +59,24 @@ const styles = StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: "#ffffff",
+    backgroundColor: Colors.inkHi,
     justifyContent: "center",
     alignItems: "center",
     shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.5,
-    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.35,
+    shadowRadius: 5,
     elevation: 4,
   },
   title: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: "#ffffff",
-    marginTop: 8,
+    fontSize: 13.5,
+    fontWeight: "600",
+    color: Colors.inkHi,
     letterSpacing: -0.2,
   },
   artist: {
-    fontSize: 11.5,
-    color: Colors.textMuted,
+    fontSize: 12,
+    color: Colors.inkDim,
     marginTop: 2,
   },
 });

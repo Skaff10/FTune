@@ -1,8 +1,9 @@
 import React from "react";
-import { View, Text, Image, StyleSheet, TouchableOpacity } from "react-native";
+import { View, Text, Image, StyleSheet } from "react-native";
 import { Play } from "lucide-react-native";
 import { Colors } from "../theme/colors";
 import type { Track } from "../types";
+import { EqBars, SpringTouchable } from "./AnimatedComponents";
 
 interface QuickTileProps {
   track: Track;
@@ -12,9 +13,9 @@ interface QuickTileProps {
 
 export const QuickTile: React.FC<QuickTileProps> = ({ track, isPlaying = false, onPlay }) => {
   return (
-    <TouchableOpacity
+    <SpringTouchable
       style={[styles.tile, isPlaying && styles.tilePlaying]}
-      activeOpacity={0.7}
+      activeScale={0.96}
       onPress={() => onPlay(track)}
     >
       <Image
@@ -29,10 +30,14 @@ export const QuickTile: React.FC<QuickTileProps> = ({ track, isPlaying = false, 
           {track.artist}
         </Text>
       </View>
-      <View style={styles.playButton}>
-        <Play size={13} color="#000000" fill="#000000" style={{ marginLeft: 1 }} />
+      <View style={[styles.playButton, isPlaying && styles.playingButton]}>
+        {isPlaying ? (
+          <EqBars color="#000000" size={11} animating={true} />
+        ) : (
+          <Play size={12} color="#000000" fill="#000000" style={{ marginLeft: 1 }} />
+        )}
       </View>
-    </TouchableOpacity>
+    </SpringTouchable>
   );
 };
 
@@ -41,22 +46,24 @@ const styles = StyleSheet.create({
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.04)",
+    backgroundColor: Colors.panel,
     borderRadius: 8,
     overflow: "hidden",
     height: 52,
     margin: 4,
-    borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.08)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Colors.hairline,
   },
   tilePlaying: {
     backgroundColor: "rgba(255, 255, 255, 0.12)",
-    borderColor: "rgba(255, 255, 255, 0.25)",
+    borderColor: Colors.borderActive,
   },
   artwork: {
     width: 52,
     height: 52,
     backgroundColor: Colors.surfaceCard,
+    borderRightWidth: StyleSheet.hairlineWidth,
+    borderRightColor: Colors.artworkBorder,
   },
   textContainer: {
     flex: 1,
@@ -66,24 +73,27 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 12.5,
     fontWeight: "700",
-    color: "#ffffff",
+    color: Colors.inkHi,
     letterSpacing: -0.2,
   },
   playingTitle: {
-    color: "#ffffff",
+    color: Colors.inkHi,
   },
   artist: {
     fontSize: 11,
-    color: Colors.textMuted,
+    color: Colors.inkDim,
     marginTop: 2,
   },
   playButton: {
     width: 26,
     height: 26,
     borderRadius: 13,
-    backgroundColor: "#ffffff",
+    backgroundColor: Colors.inkHi,
     justifyContent: "center",
     alignItems: "center",
     marginRight: 8,
+  },
+  playingButton: {
+    backgroundColor: Colors.inkHi,
   },
 });

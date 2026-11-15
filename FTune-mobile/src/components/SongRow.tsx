@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from "react";
 import { View, Text, Image, StyleSheet, TouchableOpacity, ActivityIndicator } from "react-native";
-import { Play, Pause, Heart, Download, Check } from "lucide-react-native";
+import { Download, Check } from "lucide-react-native";
 import { Colors } from "../theme/colors";
 import type { Track } from "../types";
 import { isTrackDownloaded, downloadTrack } from "../services/downloadManager";
+import { EqBars, AnimatedHeart } from "./AnimatedComponents";
 
 interface SongRowProps {
   track: Track;
@@ -66,9 +67,9 @@ export const SongRow: React.FC<SongRowProps> = ({
         {isCurrent && (
           <View style={styles.playingOverlay}>
             {isPlaying ? (
-              <Pause size={14} color="#000" fill="#000" />
+              <EqBars color="#000000" size={13} animating={true} />
             ) : (
-              <Play size={14} color="#000" fill="#000" style={{ marginLeft: 2 }} />
+              <View style={styles.pausedDot} />
             )}
           </View>
         )}
@@ -105,29 +106,26 @@ export const SongRow: React.FC<SongRowProps> = ({
           disabled={downloaded || downloading}
         >
           {downloading ? (
-            <ActivityIndicator size="small" color={Colors.textPrimary} />
+            <ActivityIndicator size="small" color={Colors.inkHi} />
           ) : downloaded ? (
             <View style={styles.downloadedBadge}>
-              <Check size={12} color="#000" strokeWidth={3} />
+              <Check size={11} color="#000" strokeWidth={3} />
             </View>
           ) : (
-            <Download size={17} color={Colors.textMuted} />
+            <Download size={16} color={Colors.inkDim} />
           )}
         </TouchableOpacity>
 
-        {/* Favorite Heart button */}
+        {/* Favorite Heart button with Apple Pop Animation */}
         {onToggleFavorite && (
-          <TouchableOpacity
-            style={styles.actionBtn}
-            onPress={() => onToggleFavorite(track)}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          >
-            <Heart
-              size={18}
-              color={isFavorite ? "#ef4444" : Colors.textMuted}
-              fill={isFavorite ? "#ef4444" : "transparent"}
+          <View style={styles.actionBtn}>
+            <AnimatedHeart
+              isFavorite={isFavorite}
+              onPress={() => onToggleFavorite(track)}
+              size={17}
+              color={Colors.inkDim}
             />
-          </TouchableOpacity>
+          </View>
         )}
       </View>
     </TouchableOpacity>
@@ -141,93 +139,101 @@ const styles = StyleSheet.create({
     paddingVertical: 9,
     paddingHorizontal: 16,
     borderRadius: 8,
-    marginHorizontal: 10,
-    marginVertical: 1,
   },
   activeContainer: {
     backgroundColor: "rgba(255, 255, 255, 0.08)",
   },
   thumbWrapper: {
     position: "relative",
-    width: 46,
-    height: 46,
+    width: 48,
+    height: 48,
     borderRadius: 8,
     overflow: "hidden",
-    backgroundColor: Colors.surfaceCard,
+    marginRight: 12,
     borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.08)",
+    borderColor: Colors.artworkBorder,
   },
   thumb: {
     width: "100%",
     height: "100%",
+    backgroundColor: Colors.panel,
   },
   playingOverlay: {
-    ...StyleSheet.absoluteFill,
-    backgroundColor: "rgba(255, 255, 255, 0.85)",
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "rgba(255, 255, 255, 0.78)",
     justifyContent: "center",
     alignItems: "center",
   },
+  pausedDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "#000",
+  },
   infoWrapper: {
     flex: 1,
-    marginLeft: 12,
     justifyContent: "center",
+    marginRight: 8,
   },
   title: {
-    fontSize: 14,
+    fontSize: 14.5,
     fontWeight: "600",
-    color: Colors.textPrimary,
-    marginBottom: 3,
+    color: Colors.inkHi,
     letterSpacing: -0.2,
+    marginBottom: 3,
   },
   activeTitle: {
-    color: "#ffffff",
+    color: Colors.inkHi,
     fontWeight: "700",
   },
   metaRow: {
     flexDirection: "row",
     alignItems: "center",
+    gap: 4,
   },
   explicitBadge: {
-    backgroundColor: "rgba(255, 255, 255, 0.16)",
-    paddingHorizontal: 4,
+    backgroundColor: Colors.elevated,
+    paddingHorizontal: 3.5,
     paddingVertical: 1,
     borderRadius: 3,
-    marginRight: 6,
   },
   explicitText: {
-    color: Colors.textPrimary,
     fontSize: 9,
-    fontWeight: "800",
+    fontWeight: "700",
+    color: Colors.inkDim,
   },
   artist: {
     fontSize: 12.5,
-    color: Colors.textSecondary,
+    color: Colors.inkDim,
     flexShrink: 1,
   },
   dot: {
-    fontSize: 12,
-    color: Colors.textMuted,
-    marginHorizontal: 5,
+    fontSize: 10,
+    color: Colors.inkGhost,
   },
   duration: {
     fontSize: 12,
-    color: Colors.textMuted,
+    color: Colors.inkFaint,
   },
   actionsRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    marginLeft: 8,
+    gap: 6,
   },
   actionBtn: {
     padding: 6,
+    borderRadius: 999,
   },
   downloadedBadge: {
     width: 18,
     height: 18,
     borderRadius: 9,
-    backgroundColor: Colors.textPrimary,
-    alignItems: "center",
+    backgroundColor: Colors.inkHi,
     justifyContent: "center",
+    alignItems: "center",
   },
 });
