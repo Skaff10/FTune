@@ -75,8 +75,9 @@ export interface RemotePlayerState {
 }
 
 export type RemoteAction =
-  | { type: "play-track"; track: Track; queue?: Track[] }
-  | { type: "play-queue"; tracks: Track[]; startIndex?: number }
+  | { type: "play-track"; track: Track; queue?: Track[]; startIndex?: number; position?: number }
+  | { type: "play-queue"; tracks: Track[]; startIndex?: number; position?: number }
+  | { type: "handoff"; track: Track; queue?: Track[]; startIndex?: number; position?: number; playing?: boolean }
   | { type: "jump-to"; index: number }
   | { type: "enqueue"; track: Track }
   | { type: "play-next"; track: Track }

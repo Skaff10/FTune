@@ -1,0 +1,201 @@
+# Build & Release FTune separately for PC (Windows/macOS) and Mobile (Android APK).
+# - PC installers contain ONLY the PC desktop app (with built-in automatic Remote Server
+#   and silent Windows Defender Firewall rules configured during setup).
+# - Mobile APK is built and attached as its own separate download (FTune-Mobile.apk).
+
+name: Release FTune (PC & Mobile)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to attach the builds to (e.g. v1.1.1). Empty = artifacts only."
+        required: false
+        default: ""
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  prepare-release:
+    if: ${{ github.event_name == 'push' || inputs.tag != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure GitHub Release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "FTune $TAG" --generate-notes --repo "$GITHUB_REPOSITORY"
+          fi
+
+  windows-pc:
+    name: Windows PC Installer
+    needs: [prepare-release]
+    if: ${{ always() && (needs.prepare-release.result == 'success' || needs.prepare-release.result == 'skipped') }}
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: Ftune-pc
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && (inputs.tag || github.ref_name) || github.ref_name }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: Ftune-pc/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build renderer, electron main, and media helper
+        run: npm run build
+
+      - name: Package Windows NSIS Setup
+        run: npx electron-builder --win nsis --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Upload Windows Setup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-pc-setup
+          path: Ftune-pc/release/FTune-Setup.exe
+          if-no-files-found: error
+
+      - name: Attach Windows Setup to Release
+        if: ${{ github.event_name == 'push' || inputs.tag != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: gh release upload "$TAG" release/FTune-Setup.exe --clobber --repo "$GITHUB_REPOSITORY"
+
+  macos-pc:
+    name: macOS PC Installers
+    needs: [prepare-release]
+    if: ${{ always() && (needs.prepare-release.result == 'success' || needs.prepare-release.result == 'skipped') }}
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: Ftune-pc
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && (inputs.tag || github.ref_name) || github.ref_name }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: Ftune-pc/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build renderer + electron main
+        run: npm run build
+
+      - name: Package ZIP installers
+        run: |
+          npx electron-builder --mac zip --arm64 --publish never
+          npx electron-builder --mac zip --x64 --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Package DMG installers (best effort)
+        run: |
+          sudo mdutil -a -i off >/dev/null 2>&1 || true
+          npx electron-builder --mac dmg --arm64 --publish never || true
+          npx electron-builder --mac dmg --x64 --publish never || true
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-pc-installers
+          path: |
+            Ftune-pc/release/*.dmg
+            Ftune-pc/release/*.zip
+          if-no-files-found: error
+
+      - name: Attach macOS installers to Release
+        if: ${{ github.event_name == 'push' || inputs.tag != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          gh release upload "$TAG" release/*.zip --clobber --repo "$GITHUB_REPOSITORY"
+          shopt -s nullglob
+          dmgs=(release/*.dmg)
+          if [ ${#dmgs[@]} -gt 0 ]; then
+            gh release upload "$TAG" "${dmgs[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+          fi
+
+  android-mobile:
+    name: Android Mobile APK
+    needs: [prepare-release]
+    if: ${{ always() && (needs.prepare-release.result == 'success' || needs.prepare-release.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: FTune-mobile
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && (inputs.tag || github.ref_name) || github.ref_name }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: FTune-mobile/package-lock.json
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install mobile dependencies
+        run: npm ci
+
+      - name: Expo Prebuild (Android)
+        run: npx expo prebuild --platform android --no-install
+
+      - name: Build Android Release APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+          cp app/build/outputs/apk/release/app-release.apk ../FTune-Mobile.apk
+
+      - name: Upload Android APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-mobile-apk
+          path: FTune-mobile/FTune-Mobile.apk
+          if-no-files-found: error
+
+      - name: Attach Android APK to Release
+        if: ${{ github.event_name == 'push' || inputs.tag != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: gh release upload "$TAG" FTune-Mobile.apk --clobber --repo "$GITHUB_REPOSITORY"

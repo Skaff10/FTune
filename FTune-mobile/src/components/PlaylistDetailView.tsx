@@ -8,7 +8,9 @@ import {
   Image,
   BackHandler,
   ActivityIndicator,
+  Platform,
 } from "react-native";
+import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import { ChevronLeft, Play, Download } from "lucide-react-native";
 import { Colors } from "../theme/colors";
 import type { PCPlaylist, Track } from "../types";
@@ -40,7 +42,6 @@ export const PlaylistDetailView: React.FC<PlaylistDetailViewProps> = ({
   const [downloadingAll, setDownloadingAll] = useState(false);
   const [downloadedCount, setDownloadedCount] = useState(0);
 
-  // Hardware Android back button navigates back
   useEffect(() => {
     const sub = BackHandler.addEventListener("hardwareBackPress", () => {
       onBack();
@@ -82,14 +83,34 @@ export const PlaylistDetailView: React.FC<PlaylistDetailViewProps> = ({
 
   return (
     <View style={styles.container}>
-      {/* Top Header Row with Clear Back Button */}
+      {/* PC-style blurred playlist artwork hero glow */}
+      <View pointerEvents="none" style={styles.heroGlowWrap}>
+        <Image
+          source={{ uri: firstCover }}
+          style={styles.heroGlowImg}
+          blurRadius={Platform.OS === "android" ? 45 : 75}
+          resizeMode="cover"
+        />
+        <Svg style={StyleSheet.absoluteFill} width="100%" height="100%" preserveAspectRatio="none">
+          <Defs>
+            <LinearGradient id="playlistHeroFade" x1="0" y1="0" x2="0" y2="1">
+              <Stop offset="0" stopColor="#000000" stopOpacity="0.25" />
+              <Stop offset="0.55" stopColor="#000000" stopOpacity="0.72" />
+              <Stop offset="1" stopColor="#000000" stopOpacity="1" />
+            </LinearGradient>
+          </Defs>
+          <Rect x="0" y="0" width="100%" height="100%" fill="url(#playlistHeroFade)" />
+        </Svg>
+      </View>
+
+      {/* Top Header Row with Back Button */}
       <View style={styles.header}>
         <TouchableOpacity
           style={styles.backBtn}
           onPress={onBack}
           hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
         >
-          <ChevronLeft size={24} color={Colors.inkHi} />
+          <ChevronLeft size={22} color={Colors.inkHi} />
           <Text style={styles.backText}>Library</Text>
         </TouchableOpacity>
       </View>
@@ -116,7 +137,7 @@ export const PlaylistDetailView: React.FC<PlaylistDetailViewProps> = ({
           disabled={tracks.length === 0}
           activeOpacity={0.75}
         >
-          <Play size={18} color="#000000" fill="#000000" style={{ marginRight: 6 }} />
+          <Play size={17} color="#000000" fill="#000000" style={{ marginRight: 6 }} />
           <Text style={styles.playAllText}>Play All</Text>
         </TouchableOpacity>
 
@@ -135,7 +156,7 @@ export const PlaylistDetailView: React.FC<PlaylistDetailViewProps> = ({
             </>
           ) : (
             <>
-              <Download size={18} color={Colors.inkHi} style={{ marginRight: 6 }} />
+              <Download size={17} color={Colors.inkHi} style={{ marginRight: 6 }} />
               <Text style={styles.downloadAllText}>Download</Text>
             </>
           )}
@@ -170,6 +191,21 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: Colors.base,
+    position: "relative",
+  },
+  heroGlowWrap: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 260,
+    overflow: "hidden",
+  },
+  heroGlowImg: {
+    width: "120%",
+    height: "120%",
+    marginLeft: "-10%",
+    marginTop: "-10%",
   },
   header: {
     paddingHorizontal: 16,
@@ -182,7 +218,7 @@ const styles = StyleSheet.create({
   },
   backText: {
     color: Colors.inkHi,
-    fontSize: 16,
+    fontSize: 15.5,
     fontWeight: "600",
   },
   hero: {
@@ -193,11 +229,11 @@ const styles = StyleSheet.create({
     gap: 16,
   },
   heroCover: {
-    width: 110,
-    height: 110,
+    width: 112,
+    height: 112,
     borderRadius: 12,
     backgroundColor: Colors.panel,
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: Colors.artworkBorder,
   },
   heroInfo: {
@@ -205,10 +241,10 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   playlistType: {
-    fontSize: 11,
+    fontSize: 10.5,
     fontWeight: "700",
-    color: Colors.inkDim,
-    letterSpacing: 1,
+    color: Colors.inkFaint,
+    letterSpacing: 1.1,
     marginBottom: 4,
   },
   playlistName: {
@@ -225,7 +261,7 @@ const styles = StyleSheet.create({
   actionsBar: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
+    gap: 10,
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
@@ -247,8 +283,8 @@ const styles = StyleSheet.create({
   downloadAllBtn: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: Colors.panel,
-    borderWidth: 1,
+    backgroundColor: "rgba(255, 255, 255, 0.08)",
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: Colors.hairline,
     paddingHorizontal: 18,
     paddingVertical: 11,

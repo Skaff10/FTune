@@ -1,6 +1,5 @@
 import React from "react";
 import { View, Text, Image, StyleSheet, TouchableOpacity } from "react-native";
-import { Play } from "lucide-react-native";
 import { Colors } from "../theme/colors";
 import type { Track } from "../types";
 import { EqBars } from "./AnimatedComponents";
@@ -11,11 +10,15 @@ interface QuickTileProps {
   onPlay: (track: Track) => void;
 }
 
+/**
+ * Matches PC HomeView QuickTile: translucent card over CoverGlow, flush left cover,
+ * no thick borders, clean title & artist, EqBars when playing.
+ */
 export const QuickTile: React.FC<QuickTileProps> = ({ track, isPlaying = false, onPlay }) => {
   return (
     <TouchableOpacity
       style={[styles.tile, isPlaying && styles.tilePlaying]}
-      activeOpacity={0.7}
+      activeOpacity={0.72}
       onPress={() => onPlay(track)}
     >
       <Image
@@ -48,21 +51,18 @@ const styles = StyleSheet.create({
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.04)",
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
     borderRadius: 8,
     overflow: "hidden",
-    height: 54,
+    height: 56,
     margin: 4,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: Colors.hairline,
   },
   tilePlaying: {
-    backgroundColor: "rgba(255, 255, 255, 0.10)",
-    borderColor: Colors.borderActive,
+    backgroundColor: "rgba(255, 255, 255, 0.14)",
   },
   artwork: {
-    width: 54,
-    height: 54,
+    width: 56,
+    height: 56,
     backgroundColor: Colors.surfaceCard,
   },
   textContainer: {
@@ -71,14 +71,14 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   title: {
-    fontSize: 12.5,
+    fontSize: 13,
     fontWeight: "600",
     color: Colors.inkHi,
     letterSpacing: -0.2,
   },
   artist: {
-    fontSize: 11,
-    color: Colors.inkDim,
+    fontSize: 11.5,
+    color: Colors.inkFaint,
     marginTop: 2,
   },
   playingBadge: {

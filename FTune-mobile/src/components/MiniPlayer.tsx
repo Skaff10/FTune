@@ -1,5 +1,5 @@
 import React, { useRef } from "react";
-import { View, Text, Image, StyleSheet, TouchableOpacity, PanResponder } from "react-native";
+import { View, Text, Image, StyleSheet, TouchableOpacity, PanResponder, Platform } from "react-native";
 import { Play, Pause, SkipForward, SkipBack } from "lucide-react-native";
 import { Colors } from "../theme/colors";
 import type { RemotePlayerState } from "../types";
@@ -49,6 +49,17 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
   return (
     <View style={styles.outerWrapper} {...panResponder.panHandlers}>
       <TouchableOpacity style={styles.card} activeOpacity={0.88} onPress={onPress}>
+        {track.thumb ? (
+          <View pointerEvents="none" style={styles.cardGlowBackdrop}>
+            <Image
+              source={{ uri: track.thumb }}
+              style={styles.cardGlowImg}
+              blurRadius={Platform.OS === "android" ? 45 : 70}
+              resizeMode="cover"
+            />
+            <View style={styles.cardGlowTint} />
+          </View>
+        ) : null}
         <View style={styles.progressTrack}>
           <View style={[styles.progressBar, { width: `${progressPercent}%` }]} />
         </View>
@@ -139,11 +150,27 @@ const styles = StyleSheet.create({
     backgroundColor: "transparent",
   },
   card: {
-    backgroundColor: "rgba(17, 17, 19, 0.96)",
+    backgroundColor: "rgba(18, 18, 22, 0.92)",
     borderRadius: 12,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: Colors.hairline,
+    borderColor: "rgba(255, 255, 255, 0.14)",
     overflow: "hidden",
+    position: "relative",
+  },
+  cardGlowBackdrop: {
+    ...StyleSheet.absoluteFill,
+    overflow: "hidden",
+  },
+  cardGlowImg: {
+    width: "120%",
+    height: "240%",
+    marginLeft: "-10%",
+    marginTop: "-30%",
+    opacity: 0.45,
+  },
+  cardGlowTint: {
+    ...StyleSheet.absoluteFill,
+    backgroundColor: "rgba(14, 14, 17, 0.72)",
   },
   progressTrack: {
     height: 2,

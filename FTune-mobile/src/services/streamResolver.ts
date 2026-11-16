@@ -116,6 +116,14 @@ export async function resolveAudioStream(videoId: string, trackMeta?: Track): Pr
     if (local) return local;
   } catch {}
 
+  // 1a. Local PC tracks stream directly from the connected FTune PC server
+  if (videoId.startsWith("local:")) {
+    if (isServerConnected()) {
+      return `${getServerUrl()}/api/stream?id=${encodeURIComponent(videoId)}`;
+    }
+    return null;
+  }
+
   // 1b. If this is a borrowed Spotify track (`sp_...`), resolve its YouTube Music videoId first
   let ytId = videoId;
   if (videoId.startsWith("sp_") || videoId.startsWith("sp:")) {

@@ -22,7 +22,7 @@ interface ConnectModalProps {
 
 export const ConnectModal: React.FC<ConnectModalProps> = ({ visible, onClose, onConnected }) => {
   const [ipInput, setIpInput] = useState(
-    getServerUrl().replace(/^https?:\/\//, "").split(":")[0] || "192.168.0.120"
+    getServerUrl().replace(/^https?:\/\//, "").split(":")[0] || ""
   );
   const [portInput, setPortInput] = useState("8765");
   const [loading, setLoading] = useState(false);

@@ -1326,13 +1326,17 @@ export function initAudioEngine(): void {
 
     if (state.seekNonce !== prev.seekNonce) {
       disarmSilenceTail();
-      try {
-        el().currentTime = state.position;
-      } catch {
-        /* ignore */
+      if (!cur || loadedId !== cur.id) {
+        pendingSeek = state.position;
+      } else {
+        try {
+          el().currentTime = state.position;
+        } catch {
+          /* ignore */
+        }
+        const edges = silenceEdges(cur?.id);
+        if (edges && edges.tail > 0.05 && state.playing) armSilenceTail(edges.tail);
       }
-      const edges = silenceEdges(cur?.id);
-      if (edges && edges.tail > 0.05 && state.playing) armSilenceTail(edges.tail);
     }
   });
 
@@ -1462,6 +1466,25 @@ async function loadTrack(track: Track | null, autoplay: boolean): Promise<void> 
  *  both setting the src lost the resume point (play pressed while the launch load resolved). */
 let loadSeq = 0;
 
+function applySeekWhenReady(a: HTMLAudioElement, targetSec: number, seq: number): void {
+  try {
+    a.currentTime = targetSec;
+  } catch {
+    /* ignore */
+  }
+  if (a.readyState < 1) {
+    const onMeta = (): void => {
+      if (seq !== loadSeq) return;
+      try {
+        a.currentTime = targetSec;
+      } catch {
+        /* ignore */
+      }
+    };
+    a.addEventListener("loadedmetadata", onMeta, { once: true });
+  }
+}
+
 async function loadUrl(track: Track, autoplay: boolean, forceRotate: boolean): Promise<void> {
   if (!elements) return;
   const seq = ++loadSeq;
@@ -1485,12 +1508,9 @@ async function loadUrl(track: Track, autoplay: boolean, forceRotate: boolean): P
       a.src = src;
       loadedId = track.id;
       if (pendingSeek > 0) {
-        try {
-          a.currentTime = pendingSeek;
-        } catch {
-          /* ignore */
-        }
+        const seekTarget = pendingSeek;
         pendingSeek = 0;
+        applySeekWhenReady(a, seekTarget, seq);
       }
       applySpeed();
       updateMediaSession(track);
@@ -1516,18 +1536,11 @@ async function loadUrl(track: Track, autoplay: boolean, forceRotate: boolean): P
     loadedId = track.id;
     const trim = silenceEdges(track.id);
     if (pendingSeek > 0) {
-      try {
-        a.currentTime = pendingSeek;
-      } catch {
-        /* ignore */
-      }
+      const seekTarget = pendingSeek;
       pendingSeek = 0;
+      applySeekWhenReady(a, seekTarget, seq);
     } else if (trim && trim.head > 0.05) {
-      try {
-        a.currentTime = trim.head;
-      } catch {
-        /* ignore */
-      }
+      applySeekWhenReady(a, trim.head, seq);
     }
     applySpeed();
     updateMediaSession(track);

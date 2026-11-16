@@ -3,6 +3,8 @@ import * as os from "os";
 import { WebSocketServer, WebSocket } from "ws";
 import * as music from "./music-service";
 import * as spotify from "./spotify";
+import { localStreamPath } from "./local-library";
+import { serveLocalFile } from "./stream-proxy";
 import type { Track } from "../src/types";
 
 export interface RemotePlayerState {
@@ -19,8 +21,9 @@ export interface RemotePlayerState {
 }
 
 export type RemoteCommand =
-  | { type: "play-track"; track: Track; queue?: Track[] }
-  | { type: "play-queue"; tracks: Track[]; startIndex?: number }
+  | { type: "play-track"; track: Track; queue?: Track[]; startIndex?: number; position?: number }
+  | { type: "play-queue"; tracks: Track[]; startIndex?: number; position?: number }
+  | { type: "handoff"; track: Track; queue?: Track[]; startIndex?: number; position?: number; playing?: boolean }
   | { type: "jump-to"; index: number }
   | { type: "enqueue"; track: Track }
   | { type: "play-next"; track: Track }
@@ -44,18 +47,44 @@ export interface RemoteServerOptions {
   onCommand: (cmd: RemoteCommand) => void;
 }
 
-export function getLocalIpAddress(): string {
+const VIRTUAL_IFACE_RE = /vethernet|wsl|hyper-v|vmware|virtualbox|vbox|docker|tailscale|zerotier|hamachi|wireguard|tun|tap|loopback|teredo|isatap|nordlynx|proton|warp|cloudflare/i;
+
+function isPrivateLanIpv4(ip: string): boolean {
+  if (ip.startsWith("192.168.")) return true;
+  if (ip.startsWith("10.")) return true;
+  const parts = ip.split(".").map(Number);
+  return parts.length === 4 && parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31;
+}
+
+function scoreInterface(name: string, ip: string): number {
+  let score = 0;
+  if (VIRTUAL_IFACE_RE.test(name)) score -= 100;
+  if (ip.startsWith("169.254.")) score -= 200; // APIPA link-local
+  if (/wi-?fi|wlan|wireless|airport|en0/i.test(name)) score += 40;
+  else if (/ethernet|eth|lan|en\d+/i.test(name)) score += 30;
+  if (ip.startsWith("192.168.")) score += 25;
+  else if (isPrivateLanIpv4(ip)) score += 15;
+  return score;
+}
+
+export function getCandidateLanIps(): string[] {
   const interfaces = os.networkInterfaces();
+  const candidates: { address: string; score: number }[] = [];
   for (const name of Object.keys(interfaces)) {
     const ifaceList = interfaces[name];
     if (!ifaceList) continue;
     for (const iface of ifaceList) {
-      if (iface.family === "IPv4" && !iface.internal) {
-        return iface.address;
+      if (iface.family === "IPv4" && !iface.internal && !iface.address.startsWith("127.")) {
+        candidates.push({ address: iface.address, score: scoreInterface(name, iface.address) });
       }
     }
   }
-  return "127.0.0.1";
+  candidates.sort((a, b) => b.score - a.score);
+  return candidates.map((c) => c.address);
+}
+
+export function getLocalIpAddress(): string {
+  return getCandidateLanIps()[0] ?? "127.0.0.1";
 }
 
 export class RemoteServer {
@@ -85,14 +114,15 @@ export class RemoteServer {
     this.onCommand = options.onCommand;
   }
 
-  public start(): Promise<void> {
+  public start(retriesLeft = 2): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.server = http.createServer(this.handleHttpRequest.bind(this));
+      const server = http.createServer(this.handleHttpRequest.bind(this));
+      const wss = new WebSocketServer({ server, path: "/ws" });
+      this.server = server;
+      this.wss = wss;
 
-      this.wss = new WebSocketServer({ server: this.server, path: "/ws" });
-      this.wss.on("connection", (ws: WebSocket) => {
+      wss.on("connection", (ws: WebSocket) => {
         console.log("[remote-server] Mobile client connected via WebSocket!");
-        // Send initial state & library upon connection
         ws.send(JSON.stringify({ type: "state", state: this.currentState }));
         ws.send(JSON.stringify({ type: "library", library: this.currentLibrary }));
 
@@ -102,6 +132,9 @@ export class RemoteServer {
             if (data?.type === "action" && data?.action) {
               console.log("[remote-server] WS action received:", data.action.type);
               this.onCommand(data.action);
+            } else if (data?.type === "sync-request") {
+              ws.send(JSON.stringify({ type: "state", state: this.currentState }));
+              ws.send(JSON.stringify({ type: "library", library: this.currentLibrary }));
             }
           } catch (e) {
             console.error("[remote-server] WebSocket message error:", e);
@@ -109,12 +142,23 @@ export class RemoteServer {
         });
       });
 
-      this.server.on("error", (err: Error) => {
+      server.on("error", (err: NodeJS.ErrnoException) => {
+        if (err.code === "EADDRINUSE" && retriesLeft > 0) {
+          console.warn(`[remote-server] Port ${this.port} busy, retrying...`);
+          try { wss.close(); } catch {}
+          try { server.close(); } catch {}
+          this.wss = null;
+          this.server = null;
+          setTimeout(() => {
+            this.start(retriesLeft - 1).then(resolve, reject);
+          }, 500);
+          return;
+        }
         console.error("[remote-server] HTTP server error:", err);
         reject(err);
       });
 
-      this.server.listen(this.port, "0.0.0.0", () => {
+      server.listen(this.port, "0.0.0.0", () => {
         console.log(`[remote-server] FTune Remote API listening on http://${getLocalIpAddress()}:${this.port}`);
         resolve();
       });
@@ -404,6 +448,10 @@ export class RemoteServer {
   }
 
   private async streamAudioTrack(trackId: string, req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    if (trackId.startsWith("local:")) {
+      serveLocalFile(localStreamPath(trackId), req.headers.range, res, req);
+      return;
+    }
     try {
       const stream = await music.resolveStream(trackId, false);
       const range = req.headers.range;
@@ -472,12 +520,23 @@ export class RemoteServer {
   public stop(): Promise<void> {
     return new Promise((resolve) => {
       if (this.wss) {
-        this.wss.close();
+        for (const client of this.wss.clients) {
+          try {
+            client.terminate();
+          } catch {}
+        }
+        try {
+          this.wss.close();
+        } catch {}
         this.wss = null;
       }
       if (this.server) {
-        this.server.close(() => {
-          this.server = null;
+        const srv = this.server;
+        this.server = null;
+        try {
+          srv.closeAllConnections?.();
+        } catch {}
+        srv.close(() => {
           resolve();
         });
       } else {

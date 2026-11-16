@@ -95,7 +95,7 @@ export function setDownloadedFileLookup(lookup: (trackId: string) => string | nu
   downloadedFile = lookup;
 }
 
-function serveLocalFile(filePath: string | null, range: string | undefined, res: http.ServerResponse, req: http.IncomingMessage): void {
+export function serveLocalFile(filePath: string | null, range: string | undefined, res: http.ServerResponse, req: http.IncomingMessage): void {
   if (!filePath) {
     res.writeHead(404);
     res.end("local file missing");

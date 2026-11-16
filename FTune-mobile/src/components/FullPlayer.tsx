@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
   View,
   Text,
@@ -13,9 +13,12 @@ import {
   PanResponder,
   ActivityIndicator,
   FlatList,
+  Animated,
+  Easing,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Slider from "@react-native-community/slider";
+import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import {
   ChevronDown,
   Play,
@@ -28,8 +31,6 @@ import {
   Volume2,
   VolumeX,
   Laptop,
-  Smartphone,
-  Heart,
   Download,
   Check,
   ListMusic,
@@ -37,11 +38,286 @@ import {
 } from "lucide-react-native";
 import { Colors } from "../theme/colors";
 import type { RemotePlayerState, Track } from "../types";
-import { isTrackDownloaded, downloadTrack } from "../services/downloadManager";
+import { isTrackDownloadedSync, downloadTrack, subscribeDownloads } from "../services/downloadManager";
 import { AnimatedHeart } from "./AnimatedComponents";
 
 const { width, height } = Dimensions.get("window");
-const COVER_SIZE = Math.min(width - 56, 360);
+const COVER_SIZE = Math.min(width - 64, Math.round(height * 0.36), 340);
+
+interface BackdropLayer {
+  id: number;
+  url: string;
+  opacity: Animated.Value;
+}
+
+/**
+ * Fullscreen crossfading + drifting artwork backdrop matching PC NowPlaying (FsBackdrop).
+ */
+const FsBackdrop: React.FC<{ artwork?: string | null; playing: boolean }> = ({
+  artwork,
+  playing,
+}) => {
+  const url = artwork && artwork.trim() ? artwork.trim() : null;
+  const [layers, setLayers] = useState<BackdropLayer[]>(() =>
+    url ? [{ id: 0, url, opacity: new Animated.Value(1) }] : []
+  );
+  const currentUrlRef = useRef<string | null>(url);
+  const nextIdRef = useRef(1);
+
+  const drift1X = useRef(new Animated.Value(0)).current;
+  const drift1Y = useRef(new Animated.Value(0)).current;
+  const drift2X = useRef(new Animated.Value(0)).current;
+  const drift2Y = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const a1 = Animated.loop(
+      Animated.sequence([
+        Animated.parallel([
+          Animated.timing(drift1X, {
+            toValue: 22,
+            duration: 9000,
+            easing: Easing.inOut(Easing.sin),
+            useNativeDriver: true,
+          }),
+          Animated.timing(drift1Y, {
+            toValue: 16,
+            duration: 9000,
+            easing: Easing.inOut(Easing.sin),
+            useNativeDriver: true,
+          }),
+        ]),
+        Animated.parallel([
+          Animated.timing(drift1X, {
+            toValue: -18,
+            duration: 9000,
+            easing: Easing.inOut(Easing.sin),
+            useNativeDriver: true,
+          }),
+          Animated.timing(drift1Y, {
+            toValue: -14,
+            duration: 9000,
+            easing: Easing.inOut(Easing.sin),
+            useNativeDriver: true,
+          }),
+        ]),
+      ])
+    );
+
+    const a2 = Animated.loop(
+      Animated.sequence([
+        Animated.parallel([
+          Animated.timing(drift2X, {
+            toValue: -20,
+            duration: 11000,
+            easing: Easing.inOut(Easing.sin),
+            useNativeDriver: true,
+          }),
+          Animated.timing(drift2Y, {
+            toValue: 18,
+            duration: 11000,
+            easing: Easing.inOut(Easing.sin),
+            useNativeDriver: true,
+          }),
+        ]),
+        Animated.parallel([
+          Animated.timing(drift2X, {
+            toValue: 20,
+            duration: 11000,
+            easing: Easing.inOut(Easing.sin),
+            useNativeDriver: true,
+          }),
+          Animated.timing(drift2Y, {
+            toValue: -16,
+            duration: 11000,
+            easing: Easing.inOut(Easing.sin),
+            useNativeDriver: true,
+          }),
+        ]),
+      ])
+    );
+
+    a1.start();
+    a2.start();
+    return () => {
+      a1.stop();
+      a2.stop();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (url === currentUrlRef.current) return;
+    currentUrlRef.current = url;
+    if (!url) {
+      setLayers([]);
+      return;
+    }
+
+    const newOpacity = new Animated.Value(0);
+    const layer: BackdropLayer = {
+      id: nextIdRef.current++,
+      url,
+      opacity: newOpacity,
+    };
+
+    setLayers((prev) => {
+      const top = prev[prev.length - 1];
+      return top ? [top, layer] : [layer];
+    });
+
+    Animated.timing(newOpacity, {
+      toValue: 1,
+      duration: 1000,
+      easing: Easing.out(Easing.ease),
+      useNativeDriver: true,
+    }).start();
+
+    const timer = setTimeout(() => {
+      setLayers((prev) => (prev.length > 1 ? prev.slice(-1) : prev));
+    }, 1050);
+
+    return () => clearTimeout(timer);
+  }, [url]);
+
+  return (
+    <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+      <View style={[StyleSheet.absoluteFill, { backgroundColor: "#0a0a0d" }]} />
+      {layers.map((layer) => (
+        <Animated.View
+          key={layer.id}
+          style={[StyleSheet.absoluteFill, { opacity: layer.opacity }]}
+        >
+          {/* Base heavily blurred artwork lighting the room */}
+          <Animated.Image
+            source={{ uri: layer.url }}
+            blurRadius={Platform.OS === "android" ? 55 : 90}
+            resizeMode="cover"
+            style={[
+              styles.backdropImg,
+              {
+                opacity: playing ? 0.56 : 0.44,
+                transform: [{ scale: 1.45 }, { translateX: drift1X }, { translateY: drift1Y }],
+              },
+            ]}
+          />
+          {/* Secondary counter-drifting artwork glow layer (matches PC animate-drift2) */}
+          <Animated.Image
+            source={{ uri: layer.url }}
+            blurRadius={Platform.OS === "android" ? 70 : 100}
+            resizeMode="cover"
+            style={[
+              styles.backdropImg,
+              {
+                opacity: playing ? 0.28 : 0.18,
+                transform: [
+                  { scale: 1.75 },
+                  { translateX: drift2X },
+                  { translateY: drift2Y },
+                ],
+              },
+            ]}
+          />
+        </Animated.View>
+      ))}
+
+      {/* Legibility scrim matching PC NowPlaying */}
+      <Svg style={StyleSheet.absoluteFill} width="100%" height="100%" preserveAspectRatio="none">
+        <Defs>
+          <LinearGradient id="fsScrim" x1="0" y1="0" x2="0" y2="1">
+            <Stop offset="0" stopColor="#000000" stopOpacity="0.28" />
+            <Stop offset="0.45" stopColor="#000000" stopOpacity="0.34" />
+            <Stop offset="0.82" stopColor="#060608" stopOpacity="0.72" />
+            <Stop offset="1" stopColor="#050507" stopOpacity="0.90" />
+          </LinearGradient>
+        </Defs>
+        <Rect x="0" y="0" width="100%" height="100%" fill="url(#fsScrim)" />
+      </Svg>
+    </View>
+  );
+};
+
+const VIZ_BARS = 24;
+
+/**
+ * Ambient symmetric visualizer matching PC NowPlaying (FsVisualizer).
+ * Dances smoothly on staggered loops while playing, settles calmly when paused.
+ */
+const FsVisualizer: React.FC<{ playing: boolean }> = ({ playing }) => {
+  const barMeta = useMemo(
+    () =>
+      Array.from({ length: VIZ_BARS }, (_, i) => {
+        const r1 = ((i * 137) % 101) / 101;
+        const r2 = ((i * 61) % 97) / 97;
+        // Taper outer edges just like PC .fs-viz mask-image
+        const distFromCenter = Math.abs(i - (VIZ_BARS - 1) / 2) / ((VIZ_BARS - 1) / 2);
+        const edgeAlpha = Math.max(0.18, 1 - distFromCenter * 0.82);
+        return {
+          dur: Math.round(700 + r1 * 650),
+          delay: Math.round(r2 * 450),
+          rest: 0.14 + r1 * 0.12,
+          peak: 0.45 + (1 - distFromCenter * 0.35) * 0.55,
+          edgeAlpha,
+        };
+      }),
+    []
+  );
+
+  const anims = useRef(barMeta.map((b) => new Animated.Value(b.rest))).current;
+
+  useEffect(() => {
+    if (!playing) {
+      anims.forEach((v, i) => {
+        Animated.timing(v, {
+          toValue: barMeta[i].rest,
+          duration: 500,
+          easing: Easing.out(Easing.ease),
+          useNativeDriver: true,
+        }).start();
+      });
+      return;
+    }
+
+    const loops = anims.map((v, i) => {
+      const m = barMeta[i];
+      return Animated.loop(
+        Animated.sequence([
+          Animated.delay(m.delay),
+          Animated.timing(v, {
+            toValue: m.peak,
+            duration: m.dur,
+            easing: Easing.inOut(Easing.sin),
+            useNativeDriver: true,
+          }),
+          Animated.timing(v, {
+            toValue: m.rest + 0.08,
+            duration: Math.round(m.dur * 0.85),
+            easing: Easing.inOut(Easing.sin),
+            useNativeDriver: true,
+          }),
+        ])
+      );
+    });
+
+    loops.forEach((l) => l.start());
+    return () => loops.forEach((l) => l.stop());
+  }, [playing]);
+
+  return (
+    <View style={styles.vizRow} pointerEvents="none">
+      {barMeta.map((b, i) => (
+        <Animated.View
+          key={i}
+          style={[
+            styles.vizBar,
+            {
+              opacity: playing ? b.edgeAlpha * 0.42 : b.edgeAlpha * 0.22,
+              transform: [{ scaleY: anims[i] }],
+            },
+          ]}
+        />
+      ))}
+    </View>
+  );
+};
 
 interface FullPlayerProps {
   visible: boolean;
@@ -65,7 +341,6 @@ export const FullPlayer: React.FC<FullPlayerProps> = ({
   visible,
   playerState,
   playbackTarget,
-  serverHostname,
   isFavorite = false,
   onClose,
   onTogglePlay,
@@ -80,18 +355,87 @@ export const FullPlayer: React.FC<FullPlayerProps> = ({
 }) => {
   const track = playerState.currentTrack;
 
-  // Local dragging state for the scrubber slider
   const [isSeeking, setIsSeeking] = useState(false);
   const [seekValue, setSeekValue] = useState(0);
-
-  // Offline download state for the current song
-  const [isDownloaded, setIsDownloaded] = useState(false);
+  const [isDownloaded, setIsDownloaded] = useState(() =>
+    track?.id ? isTrackDownloadedSync(track.id) : false
+  );
   const [isDownloading, setIsDownloading] = useState(false);
-
-  // Queue Sheet visibility
   const [queueVisible, setQueueVisible] = useState(false);
 
   const insets = useSafeAreaInsets();
+
+  // Breathing animation on hero artwork while playing (matches PC .fs-art-breathe)
+  const breatheScale = useRef(new Animated.Value(1)).current;
+  const artEnterScale = useRef(new Animated.Value(1)).current;
+  const haloOpacity = useRef(new Animated.Value(0.32)).current;
+
+  useEffect(() => {
+    if (!visible || !playerState.playing) {
+      Animated.parallel([
+        Animated.timing(breatheScale, {
+          toValue: 1,
+          duration: 800,
+          easing: Easing.out(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.timing(haloOpacity, {
+          toValue: 0.25,
+          duration: 800,
+          useNativeDriver: true,
+        }),
+      ]).start();
+      return;
+    }
+
+    const breatheLoop = Animated.loop(
+      Animated.sequence([
+        Animated.parallel([
+          Animated.timing(breatheScale, {
+            toValue: 1.018,
+            duration: 2600,
+            easing: Easing.inOut(Easing.sin),
+            useNativeDriver: true,
+          }),
+          Animated.timing(haloOpacity, {
+            toValue: 0.56,
+            duration: 2600,
+            easing: Easing.inOut(Easing.sin),
+            useNativeDriver: true,
+          }),
+        ]),
+        Animated.parallel([
+          Animated.timing(breatheScale, {
+            toValue: 1.0,
+            duration: 2600,
+            easing: Easing.inOut(Easing.sin),
+            useNativeDriver: true,
+          }),
+          Animated.timing(haloOpacity, {
+            toValue: 0.34,
+            duration: 2600,
+            easing: Easing.inOut(Easing.sin),
+            useNativeDriver: true,
+          }),
+        ]),
+      ])
+    );
+
+    breatheLoop.start();
+    return () => breatheLoop.stop();
+  }, [visible, playerState.playing]);
+
+  // Subtle entrance pop when song changes
+  useEffect(() => {
+    if (!track?.id) return;
+    artEnterScale.setValue(0.95);
+    Animated.timing(artEnterScale, {
+      toValue: 1,
+      duration: 340,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, [track?.id]);
 
   // Listen to Android hardware back press to close player
   useEffect(() => {
@@ -107,16 +451,16 @@ export const FullPlayer: React.FC<FullPlayerProps> = ({
     return () => sub.remove();
   }, [visible, queueVisible, onClose]);
 
-  // Check download status when current track changes
   useEffect(() => {
-    if (!track?.id) return;
-    let mounted = true;
-    isTrackDownloaded(track.id).then((val) => {
-      if (mounted) setIsDownloaded(val);
+    if (!track?.id) {
+      setIsDownloaded(false);
+      return;
+    }
+    setIsDownloaded(isTrackDownloadedSync(track.id));
+    const unsub = subscribeDownloads(() => {
+      setIsDownloaded(isTrackDownloadedSync(track.id));
     });
-    return () => {
-      mounted = false;
-    };
+    return unsub;
   }, [track?.id]);
 
   const handleDownload = async () => {
@@ -127,26 +471,17 @@ export const FullPlayer: React.FC<FullPlayerProps> = ({
     if (res) setIsDownloaded(true);
   };
 
-  // Swiping gestures on artwork:
-  // Swipe Down -> Close Player
-  // Swipe Left -> Next Track
-  // Swipe Right -> Prev Track
   const panResponder = useRef(
     PanResponder.create({
       onMoveShouldSetPanResponder: (_, gesture) => {
-        return Math.abs(gesture.dx) > 20 || Math.abs(gesture.dy) > 20;
+        return Math.abs(gesture.dx) > 26 || Math.abs(gesture.dy) > 26;
       },
       onPanResponderRelease: (_, gesture) => {
-        // Vertical swipe down to close
         if (gesture.dy > 80 && Math.abs(gesture.dx) < 60) {
           onClose();
-        }
-        // Horizontal swipe left for Next
-        else if (gesture.dx < -60 && Math.abs(gesture.dy) < 60) {
+        } else if (gesture.dx < -60 && Math.abs(gesture.dy) < 60) {
           onNext();
-        }
-        // Horizontal swipe right for Prev
-        else if (gesture.dx > 60 && Math.abs(gesture.dy) < 60) {
+        } else if (gesture.dx > 60 && Math.abs(gesture.dy) < 60) {
           onPrev();
         }
       },
@@ -155,8 +490,8 @@ export const FullPlayer: React.FC<FullPlayerProps> = ({
 
   if (!track) return null;
 
-  const currentPos = isSeeking ? seekValue : playerState.position || 0;
   const duration = playerState.duration || track.duration || 1;
+  const currentPos = Math.min(duration, Math.max(0, isSeeking ? seekValue : playerState.position || 0));
 
   const formatTime = (sec: number) => {
     if (!sec || isNaN(sec) || sec < 0) return "0:00";
@@ -167,8 +502,11 @@ export const FullPlayer: React.FC<FullPlayerProps> = ({
 
   const topPadding =
     Platform.OS === "android"
-      ? Math.max(insets.top, RNStatusBar.currentHeight || 0, 36)
+      ? Math.max(insets.top, RNStatusBar.currentHeight || 0, 32)
       : Math.max(insets.top, 20);
+
+  const thumbUri =
+    track.thumb || "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=600";
 
   return (
     <Modal
@@ -182,39 +520,30 @@ export const FullPlayer: React.FC<FullPlayerProps> = ({
           styles.container,
           {
             paddingTop: topPadding,
-            paddingBottom: Math.max(insets.bottom, 24),
+            paddingBottom: Math.max(insets.bottom, 20),
           },
         ]}
       >
-        {/* Subtle Ambient Artwork Tint Backdrop */}
-        <View style={styles.ambientOverlay} />
+        {/* PC-Parity Crossfading + Drifting Artwork Glow Backdrop */}
+        <FsBackdrop artwork={thumbUri} playing={playerState.playing} />
 
-        {/* Top Header Row */}
+        {/* Top Header Row — shows "Playing on PC" ONLY when playing on PC; blank when on mobile */}
         <View style={styles.header}>
           <TouchableOpacity
             style={styles.headerBtn}
             onPress={onClose}
             hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           >
-            <ChevronDown size={28} color={Colors.textPrimary} />
+            <ChevronDown size={26} color={Colors.textPrimary} />
           </TouchableOpacity>
 
           <View style={styles.headerTitleWrap}>
-            <Text style={styles.headerSubtitle}>
-              {playbackTarget === "phone" ? "PLAYING ON PHONE" : "PLAYING ON PC"}
-            </Text>
-            <View style={styles.deviceIndicatorRow}>
-              {playbackTarget === "phone" ? (
-                <Smartphone size={13} color={Colors.textSecondary} />
-              ) : (
-                <Laptop size={13} color={Colors.accentSky} />
-              )}
-              <Text style={styles.deviceIndicatorText} numberOfLines={1}>
-                {playbackTarget === "phone"
-                  ? "This Phone (Solo)"
-                  : serverHostname || "FTune PC"}
-              </Text>
-            </View>
+            {playbackTarget === "pc" ? (
+              <View style={styles.pcPlayingBadge}>
+                <Laptop size={13} color={Colors.inkHi} />
+                <Text style={styles.pcPlayingText}>Playing on PC</Text>
+              </View>
+            ) : null}
           </View>
 
           <TouchableOpacity
@@ -222,22 +551,37 @@ export const FullPlayer: React.FC<FullPlayerProps> = ({
             onPress={() => setQueueVisible(true)}
             hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           >
-            <ListMusic size={22} color={Colors.textPrimary} />
+            <ListMusic size={21} color={Colors.textPrimary} />
           </TouchableOpacity>
         </View>
 
-        {/* Artwork with Swipe Gesture Recognition */}
+        {/* Hero Artwork with Ambient Glow Halo + Breathing Animation */}
         <View style={styles.artworkArea} {...panResponder.panHandlers}>
-          <View style={styles.artworkWrapper}>
+          {/* Ambient glow halo behind the sleeve */}
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              styles.artworkHaloWrap,
+              { opacity: haloOpacity, transform: [{ scale: breatheScale }] },
+            ]}
+          >
             <Image
-              source={{
-                uri:
-                  track.thumb ||
-                  "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=600",
-              }}
-              style={styles.artwork}
+              source={{ uri: thumbUri }}
+              style={styles.artworkHaloImg}
+              blurRadius={Platform.OS === "android" ? 40 : 65}
             />
-          </View>
+          </Animated.View>
+
+          <Animated.View
+            style={[
+              styles.artworkWrapper,
+              {
+                transform: [{ scale: Animated.multiply(breatheScale, artEnterScale) }],
+              },
+            ]}
+          >
+            <Image source={{ uri: thumbUri }} style={styles.artwork} />
+          </Animated.View>
         </View>
 
         {/* Track Title, Artist, Explicit badge & Action Buttons */}
@@ -259,7 +603,6 @@ export const FullPlayer: React.FC<FullPlayerProps> = ({
           </View>
 
           <View style={styles.metaActions}>
-            {/* Download Button */}
             <TouchableOpacity
               style={styles.iconCircle}
               onPress={handleDownload}
@@ -269,26 +612,28 @@ export const FullPlayer: React.FC<FullPlayerProps> = ({
                 <ActivityIndicator size="small" color="#fff" />
               ) : isDownloaded ? (
                 <View style={styles.downloadDoneBadge}>
-                  <Check size={14} color="#000" strokeWidth={3} />
+                  <Check size={13} color="#000" strokeWidth={3} />
                 </View>
               ) : (
-                <Download size={20} color={Colors.textSecondary} />
+                <Download size={19} color={Colors.textSecondary} />
               )}
             </TouchableOpacity>
 
-            {/* Favorite / Liked Song Button with Pop Animation */}
             {onToggleFavorite && (
               <View style={styles.iconCircle}>
                 <AnimatedHeart
                   isFavorite={isFavorite}
                   onPress={() => onToggleFavorite(track)}
-                  size={24}
+                  size={21}
                   color={Colors.inkDim}
                 />
               </View>
             )}
           </View>
         </View>
+
+        {/* PC-Parity Ambient Waveform Visualizer */}
+        <FsVisualizer playing={playerState.playing} />
 
         {/* Timeline Scrubber with DRAG SUPPORT */}
         <View style={styles.scrubberSection}>
@@ -298,7 +643,7 @@ export const FullPlayer: React.FC<FullPlayerProps> = ({
             maximumValue={duration > 0 ? duration : 1}
             value={currentPos}
             minimumTrackTintColor="#ffffff"
-            maximumTrackTintColor="rgba(255, 255, 255, 0.2)"
+            maximumTrackTintColor="rgba(255, 255, 255, 0.24)"
             thumbTintColor="#ffffff"
             onSlidingStart={() => {
               setIsSeeking(true);
@@ -318,40 +663,38 @@ export const FullPlayer: React.FC<FullPlayerProps> = ({
           </View>
         </View>
 
-        {/* Main Transport Playback Controls */}
+        {/* Main Transport Playback Controls (with PC active dot indicators) */}
         <View style={styles.controlsRow}>
-          {/* Shuffle Toggle */}
           <TouchableOpacity
             style={styles.sideBtn}
             onPress={onToggleShuffle}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
           >
             <Shuffle
-              size={21}
+              size={20}
               color={playerState.shuffle ? "#ffffff" : Colors.textMuted}
             />
+            {playerState.shuffle && <View style={styles.activeDot} />}
           </TouchableOpacity>
 
-          {/* Previous Track Button */}
           <TouchableOpacity
             style={styles.skipBtn}
             onPress={onPrev}
             hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           >
-            <SkipBack size={32} color="#ffffff" fill="#ffffff" />
+            <SkipBack size={30} color="#ffffff" fill="#ffffff" />
           </TouchableOpacity>
 
-          {/* Large White Play / Pause Circle */}
           <TouchableOpacity
             style={styles.playCircle}
             onPress={onTogglePlay}
             activeOpacity={0.8}
           >
             {playerState.playing ? (
-              <Pause size={30} color="#000000" fill="#000000" />
+              <Pause size={28} color="#000000" fill="#000000" />
             ) : (
               <Play
-                size={30}
+                size={28}
                 color="#000000"
                 fill="#000000"
                 style={{ marginLeft: 3 }}
@@ -359,29 +702,28 @@ export const FullPlayer: React.FC<FullPlayerProps> = ({
             )}
           </TouchableOpacity>
 
-          {/* Next Track Button */}
           <TouchableOpacity
             style={styles.skipBtn}
             onPress={onNext}
             hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           >
-            <SkipForward size={32} color="#ffffff" fill="#ffffff" />
+            <SkipForward size={30} color="#ffffff" fill="#ffffff" />
           </TouchableOpacity>
 
-          {/* Repeat Cycle Toggle */}
           <TouchableOpacity
             style={styles.sideBtn}
             onPress={onCycleRepeat}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
           >
             {playerState.repeat === "one" ? (
-              <Repeat1 size={22} color="#ffffff" />
+              <Repeat1 size={21} color="#ffffff" />
             ) : (
               <Repeat
-                size={21}
+                size={20}
                 color={playerState.repeat === "all" ? "#ffffff" : Colors.textMuted}
               />
             )}
+            {playerState.repeat !== "off" && <View style={styles.activeDot} />}
           </TouchableOpacity>
         </View>
 
@@ -391,9 +733,9 @@ export const FullPlayer: React.FC<FullPlayerProps> = ({
             onPress={() => onSetVolume(playerState.volume > 0 ? 0 : 0.8)}
           >
             {playerState.volume === 0 || playerState.muted ? (
-              <VolumeX size={18} color={Colors.textMuted} />
+              <VolumeX size={17} color={Colors.textMuted} />
             ) : (
-              <Volume2 size={18} color={Colors.textMuted} />
+              <Volume2 size={17} color={Colors.textMuted} />
             )}
           </TouchableOpacity>
 
@@ -403,7 +745,7 @@ export const FullPlayer: React.FC<FullPlayerProps> = ({
             maximumValue={1}
             value={playerState.volume}
             minimumTrackTintColor="#ffffff"
-            maximumTrackTintColor="rgba(255, 255, 255, 0.2)"
+            maximumTrackTintColor="rgba(255, 255, 255, 0.22)"
             thumbTintColor="#ffffff"
             onValueChange={onSetVolume}
           />
@@ -482,52 +824,67 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     justifyContent: "space-between",
   },
-  ambientOverlay: {
+  backdropImg: {
     ...StyleSheet.absoluteFill,
-    backgroundColor: "rgba(255, 255, 255, 0.02)",
+    width: "100%",
+    height: "100%",
   },
   header: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingVertical: 8,
+    paddingVertical: 6,
   },
   headerBtn: {
     padding: 6,
   },
   headerTitleWrap: {
+    flex: 1,
     alignItems: "center",
+    justifyContent: "center",
   },
-  headerSubtitle: {
-    fontSize: 10,
-    fontWeight: "700",
-    color: Colors.textMuted,
-    letterSpacing: 1.2,
-  },
-  deviceIndicatorRow: {
+  pcPlayingBadge: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 5,
-    marginTop: 2,
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor: "rgba(255, 255, 255, 0.12)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255, 255, 255, 0.18)",
   },
-  deviceIndicatorText: {
+  pcPlayingText: {
     fontSize: 12,
     fontWeight: "600",
-    color: Colors.textSecondary,
+    color: Colors.inkHi,
+    letterSpacing: -0.1,
   },
   artworkArea: {
     alignItems: "center",
     justifyContent: "center",
-    marginVertical: 14,
+    marginVertical: 8,
+    position: "relative",
+  },
+  artworkHaloWrap: {
+    position: "absolute",
+    width: COVER_SIZE + 46,
+    height: COVER_SIZE + 46,
+    borderRadius: 36,
+    overflow: "hidden",
+  },
+  artworkHaloImg: {
+    width: "100%",
+    height: "100%",
   },
   artworkWrapper: {
     width: COVER_SIZE,
     height: COVER_SIZE,
-    borderRadius: 12,
+    borderRadius: 16,
     overflow: "hidden",
     backgroundColor: Colors.surfaceCard,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255, 255, 255, 0.14)",
+    borderColor: "rgba(255, 255, 255, 0.18)",
   },
   artwork: {
     width: "100%",
@@ -544,15 +901,15 @@ const styles = StyleSheet.create({
     marginRight: 16,
   },
   trackTitle: {
-    fontSize: 21,
-    fontWeight: "700",
+    fontSize: 22,
+    fontWeight: "800",
     color: "#ffffff",
-    letterSpacing: -0.4,
+    letterSpacing: -0.5,
   },
   artistRow: {
     flexDirection: "row",
     alignItems: "center",
-    marginTop: 4,
+    marginTop: 3,
   },
   explicitBadge: {
     backgroundColor: "rgba(255, 255, 255, 0.18)",
@@ -577,27 +934,43 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   iconCircle: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: "rgba(255, 255, 255, 0.08)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255, 255, 255, 0.12)",
     alignItems: "center",
     justifyContent: "center",
   },
   downloadDoneBadge: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
+    width: 19,
+    height: 19,
+    borderRadius: 9.5,
     backgroundColor: "#ffffff",
     alignItems: "center",
     justifyContent: "center",
   },
+  vizRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    height: 26,
+    gap: 4.5,
+    marginTop: 8,
+  },
+  vizBar: {
+    width: 3,
+    height: 26,
+    borderRadius: 999,
+    backgroundColor: "#ffffff",
+  },
   scrubberSection: {
-    marginTop: 10,
+    marginTop: 4,
   },
   slider: {
     width: "100%",
-    height: 36,
+    height: 34,
   },
   timeRow: {
     flexDirection: "row",
@@ -609,16 +982,28 @@ const styles = StyleSheet.create({
     fontSize: 11.5,
     fontWeight: "500",
     color: Colors.textMuted,
+    fontVariant: ["tabular-nums"],
   },
   controlsRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginVertical: 10,
+    marginVertical: 6,
     paddingHorizontal: 4,
   },
   sideBtn: {
     padding: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    position: "relative",
+  },
+  activeDot: {
+    position: "absolute",
+    bottom: 3,
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "#ffffff",
   },
   skipBtn: {
     padding: 10,
@@ -635,11 +1020,10 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 8,
-    marginTop: 4,
   },
   volumeSlider: {
     flex: 1,
-    height: 36,
+    height: 34,
     marginHorizontal: 12,
   },
   volumePercentText: {
@@ -648,18 +1032,19 @@ const styles = StyleSheet.create({
     color: Colors.textMuted,
     minWidth: 32,
     textAlign: "right",
+    fontVariant: ["tabular-nums"],
   },
   queueOverlay: {
     flex: 1,
-    backgroundColor: "rgba(0, 0, 0, 0.7)",
+    backgroundColor: "rgba(0, 0, 0, 0.72)",
     justifyContent: "flex-end",
   },
   queueSheet: {
-    backgroundColor: "#16161c",
+    backgroundColor: "#141418",
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.1)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255, 255, 255, 0.14)",
     maxHeight: height * 0.7,
   },
   queueHeader: {
@@ -668,8 +1053,8 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     paddingHorizontal: 20,
     paddingVertical: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: "rgba(255, 255, 255, 0.08)",
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "rgba(255, 255, 255, 0.1)",
   },
   queueTitle: {
     fontSize: 17,
@@ -683,11 +1068,11 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: "rgba(255, 255, 255, 0.04)",
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "rgba(255, 255, 255, 0.05)",
   },
   queueItemActive: {
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    backgroundColor: "rgba(255, 255, 255, 0.08)",
     borderRadius: 8,
     paddingHorizontal: 8,
   },

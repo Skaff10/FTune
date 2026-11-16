@@ -32,6 +32,23 @@
   WriteRegStr SHELL_CONTEXT "Software\Classes\FTune.Audio\shell\open\command" "" '"$appExe" "%1"'
   WriteRegStr SHELL_CONTEXT "Software\Classes\Applications\${APP_EXECUTABLE_FILENAME}\shell\open\command" "" '"$appExe" "%1"'
   !insertmacro FTuneEachAudioExtension FTuneOfferFor
+  ; Pre-authorize FTune and the Remote Host port (8765) in Windows Defender Firewall
+  ; silently during setup so launching FTune never triggers firewall popups.
+  nsExec::ExecToStack 'netsh advfirewall firewall delete rule name="FTune"'
+  Pop $0
+  Pop $1
+  nsExec::ExecToStack 'netsh advfirewall firewall delete rule name="FTune Remote Host"'
+  Pop $0
+  Pop $1
+  nsExec::ExecToStack 'netsh advfirewall firewall delete rule name="ByTune Remote Host"'
+  Pop $0
+  Pop $1
+  nsExec::ExecToStack 'netsh advfirewall firewall add rule name="FTune" dir=in action=allow program="$appExe" enable=yes profile=any'
+  Pop $0
+  Pop $1
+  nsExec::ExecToStack 'netsh advfirewall firewall add rule name="FTune Remote Host" dir=in action=allow protocol=TCP localport=8765 enable=yes profile=any'
+  Pop $0
+  Pop $1
   ; Let Explorer pick the new "Open with" entries up now.
   System::Call "shell32::SHChangeNotify(i 0x08000000, i 0x1000, p 0, p 0)"
 !macroend
@@ -41,5 +58,11 @@
   DeleteRegKey SHELL_CONTEXT "Software\Classes\FTune.Audio"
   DeleteRegKey SHELL_CONTEXT "Software\Classes\ByTune.Audio"
   DeleteRegKey SHELL_CONTEXT "Software\Classes\Applications\${APP_EXECUTABLE_FILENAME}"
+  nsExec::ExecToStack 'netsh advfirewall firewall delete rule name="FTune"'
+  Pop $0
+  Pop $1
+  nsExec::ExecToStack 'netsh advfirewall firewall delete rule name="FTune Remote Host"'
+  Pop $0
+  Pop $1
   System::Call "shell32::SHChangeNotify(i 0x08000000, i 0x1000, p 0, p 0)"
 !macroend

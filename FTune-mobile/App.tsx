@@ -13,6 +13,7 @@ import {
   StatusBar as RNStatusBar,
   BackHandler,
   Alert,
+  AppState,
 } from "react-native";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
@@ -49,6 +50,10 @@ import {
   connectWebSocket,
   autoDiscover,
   fetchPCLibrary,
+  fetchPCPlayerState,
+  pingServer,
+  getServerUrl,
+  requestPCSync,
 } from "./src/services/api";
 import { nativeAudio } from "./src/services/nativeAudio";
 import { resolveAudioStream } from "./src/services/streamResolver";
@@ -68,13 +73,15 @@ import { ShelfCard } from "./src/components/ShelfCard";
 import { PlaylistDetailView } from "./src/components/PlaylistDetailView";
 import { SpotifyLoginModal } from "./src/components/SpotifyLoginModal";
 import { AccountModal } from "./src/components/AccountModal";
-import { SpotifyIcon, SPOTIFY_GREEN } from "./src/components/SpotifyIcon";
+import { CoverGlow } from "./src/components/CoverGlow";
+import { SPOTIFY_GREEN, SpotifyIcon } from "./src/components/SpotifyIcon";
 import { FTuneLogo } from "./src/components/FTuneLogo";
 import { cloudAccountService } from "./src/services/cloudAccount";
 import {
   getOfflineFavorites,
   toggleOfflineFavorite,
   saveRecentTrack,
+  getRecentTracks,
 } from "./src/services/favorites";
 
 const FILTERS: { id: SearchFilter; label: string }[] = [
@@ -131,6 +138,19 @@ const INITIAL_QUICK_PICKS: Track[] = [
   },
 ];
 
+const EMPTY_PLAYER_STATE: RemotePlayerState = {
+  currentTrack: null,
+  playing: false,
+  position: 0,
+  duration: 0,
+  volume: 0.8,
+  muted: false,
+  shuffle: false,
+  repeat: "off",
+  queue: [],
+  index: 0,
+};
+
 function MainContent() {
   const insets = useSafeAreaInsets();
   const [activeTab, setActiveTab] = useState<TabKey>("home");
@@ -144,8 +164,13 @@ function MainContent() {
   // Playback Target: "phone" (native audio) or "pc" (controls FTune Desktop)
   const [playbackTarget, setPlaybackTarget] = useState<"phone" | "pc">("phone");
 
-  // Offline Favorites & Downloaded Tracks
+  // Separate authoritative states so Phone & PC never clobber each other
+  const [phoneState, setPhoneState] = useState<RemotePlayerState>(EMPTY_PLAYER_STATE);
+  const [pcState, setPcState] = useState<RemotePlayerState>(EMPTY_PLAYER_STATE);
+
+  // Offline Favorites, Recents & Downloaded Tracks
   const [favorites, setFavorites] = useState<Track[]>(INITIAL_QUICK_PICKS.slice(0, 4));
+  const [recentTracks, setRecentTracks] = useState<Track[]>([]);
   const [downloadedTracks, setDownloadedTracks] = useState<Track[]>([]);
 
   // Library Playlists (Borrowed Spotify Playlists + PC Playlists)
@@ -174,31 +199,44 @@ function MainContent() {
     cloudAccountService.getStatus()
   );
 
-  // Unified Player State
-  const [playerState, setPlayerState] = useState<RemotePlayerState>({
-    currentTrack: null,
-    playing: false,
-    position: 0,
-    duration: 0,
-    volume: 0.8,
-    muted: false,
-    shuffle: false,
-    repeat: "off",
-    queue: [],
-    index: 0,
-  });
-
   const searchDebounce = useRef<any>(null);
   const playbackTargetRef = useRef<"phone" | "pc">("phone");
-  const playerStateRef = useRef<RemotePlayerState>(playerState);
+  const connectedRef = useRef(false);
+  const phoneStateRef = useRef<RemotePlayerState>(EMPTY_PLAYER_STATE);
+  const pcStateRef = useRef<RemotePlayerState>(EMPTY_PLAYER_STATE);
+  const phoneOpTokenRef = useRef(0);
+  const pendingSwitchToPcRef = useRef(false);
+  const pcHandoffPendingRef = useRef(false);
+  const onTrackEndedHandlerRef = useRef<() => void>(() => {});
 
-  useEffect(() => {
-    playbackTargetRef.current = playbackTarget;
-  }, [playbackTarget]);
+  const updatePhoneState = (
+    updater:
+      | RemotePlayerState
+      | ((prev: RemotePlayerState) => RemotePlayerState)
+  ) => {
+    const next =
+      typeof updater === "function" ? updater(phoneStateRef.current) : updater;
+    phoneStateRef.current = next;
+    setPhoneState(next);
+  };
 
-  useEffect(() => {
-    playerStateRef.current = playerState;
-  }, [playerState]);
+  const updatePcState = (
+    updater:
+      | RemotePlayerState
+      | ((prev: RemotePlayerState) => RemotePlayerState)
+  ) => {
+    const next =
+      typeof updater === "function" ? updater(pcStateRef.current) : updater;
+    pcStateRef.current = next;
+    setPcState(next);
+  };
+
+  const updatePlaybackTarget = (target: "phone" | "pc") => {
+    playbackTargetRef.current = target;
+    setPlaybackTarget(target);
+  };
+
+  const playerState = playbackTarget === "pc" ? pcState : phoneState;
 
   // Handle hardware Android Back Button
   useEffect(() => {
@@ -222,17 +260,110 @@ function MainContent() {
     return () => sub.remove();
   }, [fullPlayerVisible, selectedPlaylist, activeTab]);
 
+  // Play a track directly on the phone via nativeAudio (cancellation-safe)
+  const playOnPhone = async (
+    track: Track,
+    queue: Track[],
+    startIndex: number,
+    startPosition = 0
+  ) => {
+    const token = ++phoneOpTokenRef.current;
+
+    // Immediately stop previous phone playback so audio never overlaps or leaks
+    nativeAudio.stop();
+
+    updatePhoneState((prev) => ({
+      ...prev,
+      currentTrack: track,
+      playing: true,
+      position: Math.max(0, startPosition || 0),
+      duration: track.duration || prev.duration || 0,
+      queue,
+      index: startIndex,
+    }));
+
+    const streamUrl = await resolveAudioStream(track.id, track);
+
+    // Abort if user paused, switched tracks, or switched to PC while resolving
+    if (token !== phoneOpTokenRef.current || playbackTargetRef.current !== "phone") {
+      return;
+    }
+
+    if (!streamUrl) {
+      updatePhoneState((prev) => ({ ...prev, playing: false }));
+      Alert.alert("Playback error", "Could not resolve audio stream for this track.");
+      return;
+    }
+
+    const ok = await nativeAudio.play(
+      streamUrl,
+      startPosition,
+      phoneStateRef.current.volume,
+      track
+    );
+
+    if (token !== phoneOpTokenRef.current || playbackTargetRef.current !== "phone") {
+      nativeAudio.stop();
+      return;
+    }
+
+    if (!ok) {
+      updatePhoneState((prev) => ({ ...prev, playing: false }));
+    }
+  };
+
+  // Fresh track-end handler (always sees current queue/repeat/shuffle refs)
+  onTrackEndedHandlerRef.current = () => {
+    if (playbackTargetRef.current !== "phone") return;
+    const { queue, index, repeat, shuffle, currentTrack } = phoneStateRef.current;
+    if (queue.length === 0) {
+      updatePhoneState((prev) => ({ ...prev, playing: false, position: 0 }));
+      return;
+    }
+    if (repeat === "one" && currentTrack) {
+      void playOnPhone(currentTrack, queue, index, 0);
+      return;
+    }
+    if (shuffle && queue.length > 1) {
+      let nextIdx = Math.floor(Math.random() * queue.length);
+      if (nextIdx === index) nextIdx = (index + 1) % queue.length;
+      const nextTrack = queue[nextIdx];
+      if (nextTrack) {
+        void playOnPhone(nextTrack, queue, nextIdx, 0);
+      }
+      return;
+    }
+    if (index + 1 < queue.length) {
+      const nextIdx = index + 1;
+      const nextTrack = queue[nextIdx];
+      if (nextTrack) {
+        void playOnPhone(nextTrack, queue, nextIdx, 0);
+      }
+      return;
+    }
+    if (repeat === "all") {
+      const first = queue[0];
+      if (first) {
+        void playOnPhone(first, queue, 0, 0);
+      }
+      return;
+    }
+    updatePhoneState((prev) => ({ ...prev, playing: false, position: 0 }));
+  };
+
   // Wire up Native Audio engine listeners for standalone Phone playback
   useEffect(() => {
     nativeAudio.onStateChange = (isPlaying) => {
       if (playbackTargetRef.current === "phone") {
-        setPlayerState((prev) => ({ ...prev, playing: isPlaying }));
+        updatePhoneState((prev) =>
+          prev.playing === isPlaying ? prev : { ...prev, playing: isPlaying }
+        );
       }
     };
 
     nativeAudio.onTimeUpdate = (posSec, durSec) => {
       if (playbackTargetRef.current === "phone") {
-        setPlayerState((prev) => ({
+        updatePhoneState((prev) => ({
           ...prev,
           position: posSec,
           duration: durSec > 0 ? durSec : prev.duration,
@@ -241,8 +372,12 @@ function MainContent() {
     };
 
     nativeAudio.onTrackEnded = () => {
+      onTrackEndedHandlerRef.current();
+    };
+
+    nativeAudio.onError = () => {
       if (playbackTargetRef.current === "phone") {
-        handleNext();
+        updatePhoneState((prev) => ({ ...prev, playing: false }));
       }
     };
 
@@ -250,21 +385,22 @@ function MainContent() {
       nativeAudio.onStateChange = null;
       nativeAudio.onTimeUpdate = null;
       nativeAudio.onTrackEnded = null;
+      nativeAudio.onError = null;
     };
   }, []);
 
   // Smooth position progression on PC mode between state pushes
   useEffect(() => {
-    if (playbackTarget === "pc" && playerState.playing) {
+    if (playbackTarget === "pc" && pcState.playing) {
       const interval = setInterval(() => {
-        setPlayerState((prev) => {
+        updatePcState((prev) => {
           if (!prev.playing || prev.position >= prev.duration) return prev;
           return { ...prev, position: prev.position + 1 };
         });
       }, 1000);
       return () => clearInterval(interval);
     }
-  }, [playbackTarget, playerState.playing, playerState.duration]);
+  }, [playbackTarget, pcState.playing, pcState.duration]);
 
   // Subscribe to Spotify service, borrowed playlists, and Cloud Account sync
   useEffect(() => {
@@ -289,50 +425,54 @@ function MainContent() {
     };
   }, []);
 
-  // Initialize storage, offline downloads, favorites, and PC connection
+  // Initialize storage, offline downloads, favorites, recents, and PC connection
   useEffect(() => {
     let cleanupWs: (() => void) | null = null;
+    let unsubDls: (() => void) | null = null;
 
     const init = async () => {
       await initServerAddress();
 
-      // Load offline saved favorites
-      const savedFavs = await getOfflineFavorites();
+      const [savedFavs, savedRecents, dls] = await Promise.all([
+        getOfflineFavorites(),
+        getRecentTracks(),
+        getDownloadedTracks(),
+      ]);
+
       if (savedFavs && savedFavs.length > 0) {
         setFavorites(savedFavs);
       }
-
-      // Load offline downloaded tracks
-      const dls = await getDownloadedTracks();
+      if (savedRecents && savedRecents.length > 0) {
+        setRecentTracks(savedRecents);
+      }
       setDownloadedTracks(dls);
 
-      // Subscribe to downloads updates
-      const unsubDls = subscribeDownloads((tracks) => {
+      unsubDls = subscribeDownloads((tracks) => {
         setDownloadedTracks(tracks);
-      });
-
-      // Auto-scan local Wi-Fi in background
-      autoDiscover().then((found) => {
-        if (found) {
-          fetchPCLibrary().then((lib) => {
-            if (lib?.playlists) setPcPlaylists(lib.playlists);
-          });
-          spotifyService.refreshPlaylists();
-        }
       });
 
       cleanupWs = connectWebSocket(
         (newState) => {
-          if (playbackTargetRef.current === "pc") {
-            setPlayerState((prev) => ({ ...prev, ...newState }));
-          }
+          // Ignore stale PC snapshots while a handoff from Phone -> PC is in flight
+          if (pcHandoffPendingRef.current) return;
+          // Always mirror PC state cleanly into pcState only (never overwrites phoneState)
+          updatePcState((prev) => ({ ...prev, ...newState }));
         },
         (isConnected) => {
+          connectedRef.current = isConnected;
           setConnected(isConnected);
           if (isConnected) {
-            setPlaybackTarget("pc");
+            const url = getServerUrl();
+            if (url) {
+              pingServer(url, 1200).then((info) => {
+                if (info?.hostname) setHostname(info.hostname);
+              });
+            }
             fetchPCLibrary().then((lib) => {
               if (lib?.playlists) setPcPlaylists(lib.playlists);
+            });
+            fetchPCPlayerState().then((st) => {
+              if (st) updatePcState((prev) => ({ ...prev, ...st }));
             });
             spotifyService.refreshPlaylists();
           }
@@ -344,17 +484,148 @@ function MainContent() {
         }
       );
 
-      return () => {
-        unsubDls();
-      };
+      // Auto-scan local Wi-Fi silently in background without hijacking Phone playback
+      autoDiscover().then((found) => {
+        if (found) {
+          pingServer(found, 1200).then((info) => {
+            if (info?.hostname) setHostname(info.hostname);
+          });
+          fetchPCLibrary().then((lib) => {
+            if (lib?.playlists) setPcPlaylists(lib.playlists);
+          });
+          fetchPCPlayerState().then((st) => {
+            if (st) updatePcState((prev) => ({ ...prev, ...st }));
+          });
+          spotifyService.refreshPlaylists();
+        }
+      });
     };
 
     init();
 
+    const appStateSub = AppState.addEventListener("change", (nextAppState) => {
+      if (nextAppState === "active") {
+        if (!connectedRef.current) {
+          void autoDiscover();
+        } else if (playbackTargetRef.current === "pc") {
+          requestPCSync();
+        }
+      }
+    });
+
     return () => {
+      appStateSub.remove();
+      if (unsubDls) unsubDls();
       if (cleanupWs) cleanupWs();
     };
   }, []);
+
+  // Switch cleanly from Phone -> PC: stop phone audio and run track on PC
+  const switchToPC = async () => {
+    if (!connectedRef.current) {
+      const found = await autoDiscover();
+      if (!found) {
+        pendingSwitchToPcRef.current = true;
+        setConnectModalVisible(true);
+        return;
+      }
+    }
+
+    const prevTarget = playbackTargetRef.current;
+    const fromPhone = phoneStateRef.current;
+
+    // 1. Guarantee Phone audio stops immediately & cancel any pending stream resolve
+    phoneOpTokenRef.current++;
+    nativeAudio.stop();
+    updatePhoneState((prev) => ({ ...prev, playing: false }));
+
+    // 2. Switch UI target to PC
+    updatePlaybackTarget("pc");
+
+    // 3. Automatically start music on PC
+    if (prevTarget === "phone" && fromPhone.currentTrack) {
+      const handoffTrack = fromPhone.currentTrack;
+      const handoffQueue =
+        fromPhone.queue.length > 0 ? [...fromPhone.queue] : [handoffTrack];
+      const handoffIndex = Math.max(
+        0,
+        Math.min(fromPhone.index, handoffQueue.length - 1)
+      );
+      const handoffPos = fromPhone.position || 0;
+
+      // Optimistic PC UI update right away
+      pcHandoffPendingRef.current = true;
+      updatePcState((prev) => ({
+        ...prev,
+        currentTrack: handoffTrack,
+        playing: true,
+        position: handoffPos,
+        duration: handoffTrack.duration || prev.duration,
+        queue: handoffQueue,
+        index: handoffIndex,
+      }));
+
+      try {
+        const resolvedTrack = await spotifyService.resolvePlayableTrack(handoffTrack);
+        // If user already switched back to phone during resolve, abort PC start
+        if (playbackTargetRef.current !== "pc") return;
+
+        handoffQueue[handoffIndex] = resolvedTrack;
+        await sendRemoteAction({
+          type: "handoff",
+          track: resolvedTrack,
+          queue: handoffQueue,
+          startIndex: handoffIndex,
+          position: handoffPos,
+          playing: true,
+        });
+      } finally {
+        pcHandoffPendingRef.current = false;
+      }
+    } else {
+      const freshPc = (await fetchPCPlayerState()) || pcStateRef.current;
+      if (playbackTargetRef.current !== "pc") return;
+      updatePcState(freshPc);
+      if (freshPc.currentTrack && !freshPc.playing) {
+        updatePcState((prev) => ({ ...prev, playing: true }));
+        await sendRemoteAction({ type: "play" });
+      }
+    }
+  };
+
+  // Switch cleanly from PC -> Phone: pause PC and automatically run track on Phone
+  const switchToPhone = async () => {
+    const prevTarget = playbackTargetRef.current;
+    const fromPc = pcStateRef.current;
+
+    // 1. Pause PC immediately so audio never plays on both devices
+    if (connectedRef.current) {
+      updatePcState((prev) => ({ ...prev, playing: false }));
+      void sendRemoteAction({ type: "pause" });
+    }
+
+    // 2. Switch UI target to Phone
+    updatePlaybackTarget("phone");
+
+    // 3. Automatically run music on Phone
+    if (prevTarget === "pc" && fromPc.currentTrack) {
+      const q = fromPc.queue.length > 0 ? fromPc.queue : [fromPc.currentTrack];
+      const idx = Math.max(0, Math.min(fromPc.index, q.length - 1));
+      await playOnPhone(fromPc.currentTrack, q, idx, fromPc.position || 0);
+      return;
+    }
+
+    const curPhone = phoneStateRef.current;
+    if (curPhone.currentTrack) {
+      if (nativeAudio.hasLoadedPlayer() && nativeAudio.resume()) {
+        updatePhoneState((prev) => ({ ...prev, playing: true }));
+      } else {
+        const q = curPhone.queue.length > 0 ? curPhone.queue : [curPhone.currentTrack];
+        const idx = Math.max(0, Math.min(curPhone.index, q.length - 1));
+        await playOnPhone(curPhone.currentTrack, q, idx, curPhone.position || 0);
+      }
+    }
+  };
 
   // Search input handler with 350ms debounce
   const handleQueryChange = (text: string) => {
@@ -397,9 +668,11 @@ function MainContent() {
     }
   };
 
-  // Playback action dispatcher (Routes to Phone native audio or PC remote)
+  // Playback action dispatcher (Routes strictly to current target)
   const handlePlaySong = async (track: Track, customQueue?: Track[], startIndex?: number) => {
-    saveRecentTrack(track);
+    saveRecentTrack(track).then(() => {
+      setRecentTracks((prev) => [track, ...prev.filter((t) => t.id !== track.id)].slice(0, 20));
+    });
 
     const q = customQueue || (results.length > 0 ? results : [track]);
     const trackIndex =
@@ -407,78 +680,95 @@ function MainContent() {
         ? startIndex
         : Math.max(0, q.findIndex((t) => t.id === track.id));
 
-    setPlayerState((prev) => ({
-      ...prev,
-      currentTrack: track,
-      playing: true,
-      position: 0,
-      duration: track.duration,
-      queue: q,
-      index: trackIndex,
-    }));
-
-    if (playbackTarget === "phone" || !connected) {
-      // Standalone phone playback via expo-audio (resolves sp_... tracks automatically)
-      const streamUrl = await resolveAudioStream(track.id, track);
-      if (streamUrl) {
-        await nativeAudio.play(streamUrl);
-      } else {
-        Alert.alert("Playback error", "Could not resolve audio stream for this track.");
-      }
+    if (playbackTargetRef.current === "phone" || !connectedRef.current) {
+      await playOnPhone(track, q, trackIndex, 0);
     } else {
-      // Send playback command to FTune Desktop (resolve sp_... track first if borrowed)
+      phoneOpTokenRef.current++;
+      nativeAudio.stop();
+      updatePhoneState((prev) => ({ ...prev, playing: false }));
+
+      const nextQueue = [...q];
+      updatePcState((prev) => ({
+        ...prev,
+        currentTrack: track,
+        playing: true,
+        position: 0,
+        duration: track.duration,
+        queue: nextQueue,
+        index: trackIndex,
+      }));
+
       const resolvedTrack = await spotifyService.resolvePlayableTrack(track);
-      sendRemoteAction({
+      if (playbackTargetRef.current !== "pc") return;
+
+      nextQueue[trackIndex] = resolvedTrack;
+      await sendRemoteAction({
         type: "play-track",
         track: resolvedTrack,
-        queue: q,
+        queue: nextQueue,
+        startIndex: trackIndex,
+        position: 0,
       });
     }
   };
 
   const handleTogglePlay = async () => {
-    const nextPlaying = !playerState.playing;
-    setPlayerState((prev) => ({ ...prev, playing: nextPlaying }));
-
-    if (playbackTarget === "phone" || !connected) {
-      if (nextPlaying) {
-        if (!playerState.currentTrack) {
-          if (playerState.queue.length > 0) {
-            handlePlaySong(playerState.queue[0], playerState.queue, 0);
-          }
-        } else {
-          await nativeAudio.resume();
-        }
-      } else {
-        await nativeAudio.pause();
+    if (playbackTargetRef.current === "pc" && connectedRef.current) {
+      const curPc = pcStateRef.current;
+      if (!curPc.currentTrack && curPc.queue.length > 0) {
+        await handlePlaySong(curPc.queue[0], curPc.queue, 0);
+        return;
       }
+      const nextPlaying = !curPc.playing;
+      updatePcState((prev) => ({ ...prev, playing: nextPlaying }));
+      await sendRemoteAction({ type: nextPlaying ? "play" : "pause" });
+      return;
+    }
+
+    const curPhone = phoneStateRef.current;
+    if (curPhone.playing) {
+      phoneOpTokenRef.current++;
+      nativeAudio.pause();
+      updatePhoneState((prev) => ({ ...prev, playing: false }));
     } else {
-      sendRemoteAction({ type: "toggle" });
+      if (nativeAudio.hasLoadedPlayer() && nativeAudio.resume()) {
+        updatePhoneState((prev) => ({ ...prev, playing: true }));
+      } else if (curPhone.currentTrack) {
+        const q = curPhone.queue.length > 0 ? curPhone.queue : [curPhone.currentTrack];
+        const idx = Math.max(0, Math.min(curPhone.index, q.length - 1));
+        await playOnPhone(curPhone.currentTrack, q, idx, curPhone.position || 0);
+      } else if (curPhone.queue.length > 0) {
+        await playOnPhone(curPhone.queue[0], curPhone.queue, 0, 0);
+      }
     }
   };
 
   const handleNext = () => {
-    if (playbackTarget === "pc" && connected) {
-      sendRemoteAction({ type: "next" });
+    if (playbackTargetRef.current === "pc" && connectedRef.current) {
+      void sendRemoteAction({ type: "next" });
       return;
     }
 
-    const { queue, index } = playerStateRef.current;
+    const { queue, index, shuffle } = phoneStateRef.current;
     if (queue.length === 0) return;
-    const nextIdx = (index + 1) % queue.length;
+    let nextIdx = (index + 1) % queue.length;
+    if (shuffle && queue.length > 1) {
+      nextIdx = Math.floor(Math.random() * queue.length);
+      if (nextIdx === index) nextIdx = (index + 1) % queue.length;
+    }
     const nextTrack = queue[nextIdx];
     if (nextTrack) {
-      handlePlaySong(nextTrack, queue, nextIdx);
+      void handlePlaySong(nextTrack, queue, nextIdx);
     }
   };
 
   const handlePrev = () => {
-    if (playbackTarget === "pc" && connected) {
-      sendRemoteAction({ type: "prev" });
+    if (playbackTargetRef.current === "pc" && connectedRef.current) {
+      void sendRemoteAction({ type: "prev" });
       return;
     }
 
-    const { queue, index, position } = playerStateRef.current;
+    const { queue, index, position } = phoneStateRef.current;
     if (position > 3) {
       handleSeek(0);
       return;
@@ -487,54 +777,62 @@ function MainContent() {
     const prevIdx = (index - 1 + queue.length) % queue.length;
     const prevTrack = queue[prevIdx];
     if (prevTrack) {
-      handlePlaySong(prevTrack, queue, prevIdx);
+      void handlePlaySong(prevTrack, queue, prevIdx);
     }
   };
 
   const handleSeek = (position: number) => {
-    setPlayerState((prev) => ({ ...prev, position }));
-    if (playbackTarget === "phone" || !connected) {
-      nativeAudio.seek(position);
+    if (playbackTargetRef.current === "pc" && connectedRef.current) {
+      updatePcState((prev) => ({ ...prev, position }));
+      void sendRemoteAction({ type: "seek", position });
     } else {
-      sendRemoteAction({ type: "seek", position });
+      updatePhoneState((prev) => ({ ...prev, position }));
+      void nativeAudio.seek(position);
     }
   };
 
   const handleSetVolume = (volume: number) => {
-    setPlayerState((prev) => ({ ...prev, volume }));
-    if (playbackTarget === "phone" || !connected) {
-      nativeAudio.setVolume(volume);
+    if (playbackTargetRef.current === "pc" && connectedRef.current) {
+      updatePcState((prev) => ({ ...prev, volume }));
+      void sendRemoteAction({ type: "set-volume", volume });
     } else {
-      sendRemoteAction({ type: "set-volume", volume });
+      updatePhoneState((prev) => ({ ...prev, volume }));
+      nativeAudio.setVolume(volume);
     }
   };
 
   const handleToggleShuffle = () => {
-    const nextShuffle = !playerState.shuffle;
-    setPlayerState((prev) => ({ ...prev, shuffle: nextShuffle }));
-    if (playbackTarget === "pc" && connected) {
-      sendRemoteAction({ type: "toggle-shuffle" });
+    if (playbackTargetRef.current === "pc" && connectedRef.current) {
+      updatePcState((prev) => ({ ...prev, shuffle: !prev.shuffle }));
+      void sendRemoteAction({ type: "toggle-shuffle" });
+    } else {
+      updatePhoneState((prev) => ({ ...prev, shuffle: !prev.shuffle }));
     }
   };
 
   const handleCycleRepeat = () => {
     const modes: ("off" | "all" | "one")[] = ["off", "all", "one"];
-    const curIdx = modes.indexOf(playerState.repeat);
-    const nextMode = modes[(curIdx + 1) % modes.length];
-    setPlayerState((prev) => ({ ...prev, repeat: nextMode }));
-    if (playbackTarget === "pc" && connected) {
-      sendRemoteAction({ type: "cycle-repeat" });
+    if (playbackTargetRef.current === "pc" && connectedRef.current) {
+      const curIdx = modes.indexOf(pcStateRef.current.repeat);
+      const nextMode = modes[(curIdx + 1) % modes.length];
+      updatePcState((prev) => ({ ...prev, repeat: nextMode }));
+      void sendRemoteAction({ type: "cycle-repeat" });
+    } else {
+      const curIdx = modes.indexOf(phoneStateRef.current.repeat);
+      const nextMode = modes[(curIdx + 1) % modes.length];
+      updatePhoneState((prev) => ({ ...prev, repeat: nextMode }));
     }
   };
 
   const handleJumpToQueue = (index: number) => {
-    const track = playerState.queue[index];
-    if (!track) return;
-
-    if (playbackTarget === "pc" && connected) {
-      sendRemoteAction({ type: "jump-to", index });
+    if (playbackTargetRef.current === "pc" && connectedRef.current) {
+      const track = pcStateRef.current.queue[index];
+      if (!track) return;
+      void sendRemoteAction({ type: "jump-to", index });
     } else {
-      handlePlaySong(track, playerState.queue, index);
+      const track = phoneStateRef.current.queue[index];
+      if (!track) return;
+      void handlePlaySong(track, phoneStateRef.current.queue, index);
     }
   };
 
@@ -575,12 +873,23 @@ function MainContent() {
 
   const topPadding =
     Platform.OS === "android"
-      ? Math.max(insets.top, RNStatusBar.currentHeight || 0, 36)
+      ? Math.max(insets.top, RNStatusBar.currentHeight || 0, 32)
       : Math.max(insets.top, 20);
+
+  // PC CoverGlow parity: active track cover glows, or lead Home cover on first visit
+  const homeLeadThumb =
+    recentTracks[0]?.thumb || INITIAL_QUICK_PICKS[0]?.thumb || null;
+  const glowUrl =
+    activeTab === "library" && selectedPlaylist
+      ? null
+      : playerState.currentTrack?.thumb ?? (activeTab === "home" ? homeLeadThumb : null);
 
   return (
     <View style={[styles.root, { paddingTop: topPadding }]}>
       <StatusBar style="light" />
+
+      {/* PC-Parity Top-of-Panel Artwork Glow Animation */}
+      <CoverGlow url={glowUrl} playing={playerState.playing} height={340} />
 
       {/* Top Header Bar */}
       <View style={styles.header}>
@@ -589,7 +898,7 @@ function MainContent() {
           <Text style={styles.brandName}>FTune</Text>
         </View>
 
-        {/* Right Side: Dual Mode Switcher + Google Account Avatar */}
+        {/* Right Side: Dual Mode Switcher + Cloud Account Avatar */}
         <View style={styles.headerRightRow}>
           <View style={styles.modeSwitcher}>
             <TouchableOpacity
@@ -597,7 +906,7 @@ function MainContent() {
                 styles.targetBtn,
                 playbackTarget === "phone" && styles.targetBtnActive,
               ]}
-              onPress={() => setPlaybackTarget("phone")}
+              onPress={() => void switchToPhone()}
               activeOpacity={0.8}
             >
               <Smartphone
@@ -619,13 +928,7 @@ function MainContent() {
                 styles.targetBtn,
                 playbackTarget === "pc" && styles.targetBtnActive,
               ]}
-              onPress={() => {
-                if (!connected) {
-                  setConnectModalVisible(true);
-                } else {
-                  setPlaybackTarget("pc");
-                }
-              }}
+              onPress={() => void switchToPC()}
               activeOpacity={0.8}
             >
               <View
@@ -681,40 +984,73 @@ function MainContent() {
             showsVerticalScrollIndicator={false}
             contentContainerStyle={styles.homeScrollContent}
           >
-            {/* Quick Picks Header */}
+            {/* Quick Picks 2-Column Grid */}
             <View style={styles.sectionHeaderRow}>
               <Text style={styles.sectionTitle}>Quick Picks</Text>
             </View>
 
-            {/* 2-Column Grid of Quick Tiles */}
             <View style={styles.quickGrid}>
               {INITIAL_QUICK_PICKS.map((track) => (
                 <View key={track.id} style={styles.quickCol}>
                   <QuickTile
                     track={track}
-                    isPlaying={playerState.currentTrack?.id === track.id && playerState.playing}
-                    onPlay={(t) => handlePlaySong(t, INITIAL_QUICK_PICKS)}
+                    isPlaying={
+                      playerState.currentTrack?.id === track.id && playerState.playing
+                    }
+                    onPlay={(t) => void handlePlaySong(t, INITIAL_QUICK_PICKS)}
                   />
                 </View>
               ))}
             </View>
 
+            {/* Recently Played Shelf (matches PC HomeView) */}
+            {recentTracks.length > 0 && (
+              <>
+                <View style={[styles.sectionHeaderRow, { marginTop: 26 }]}>
+                  <Text style={styles.sectionTitle}>Recently Played</Text>
+                </View>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  style={styles.shelfScroll}
+                >
+                  {recentTracks.slice(0, 10).map((track) => (
+                    <ShelfCard
+                      key={`recent-${track.id}`}
+                      track={track}
+                      isPlaying={
+                        playerState.currentTrack?.id === track.id && playerState.playing
+                      }
+                      onPlay={(t) => void handlePlaySong(t, recentTracks)}
+                    />
+                  ))}
+                </ScrollView>
+              </>
+            )}
+
             {/* Trending Shelf */}
-            <View style={[styles.sectionHeaderRow, { marginTop: 24 }]}>
+            <View style={[styles.sectionHeaderRow, { marginTop: 26 }]}>
               <Text style={styles.sectionTitle}>Trending on FTune</Text>
             </View>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.shelfScroll}>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={styles.shelfScroll}
+            >
               {INITIAL_QUICK_PICKS.slice(0, 5).map((track) => (
                 <ShelfCard
                   key={`shelf-${track.id}`}
                   track={track}
-                  onPlay={(t) => handlePlaySong(t, INITIAL_QUICK_PICKS)}
+                  isPlaying={
+                    playerState.currentTrack?.id === track.id && playerState.playing
+                  }
+                  onPlay={(t) => void handlePlaySong(t, INITIAL_QUICK_PICKS)}
                 />
               ))}
             </ScrollView>
 
             {/* Mood Chips */}
-            <View style={[styles.sectionHeaderRow, { marginTop: 24 }]}>
+            <View style={[styles.sectionHeaderRow, { marginTop: 26 }]}>
               <Text style={styles.sectionTitle}>Moods & Genres</Text>
             </View>
             <View style={styles.moodsWrap}>
@@ -802,7 +1138,7 @@ function MainContent() {
                     isPlaying={playerState.currentTrack?.id === item.id && playerState.playing}
                     isCurrent={playerState.currentTrack?.id === item.id}
                     isFavorite={favorites.some((f) => f.id === item.id)}
-                    onPlay={(t) => handlePlaySong(t, results)}
+                    onPlay={(t) => void handlePlaySong(t, results)}
                     onToggleFavorite={handleToggleFavorite}
                   />
                 )}
@@ -820,7 +1156,7 @@ function MainContent() {
           </View>
         )}
 
-        {/* 3. LIBRARY TAB (Playlists, Liked, Offline, Queue + Discreet Library Fetch) */}
+        {/* 3. LIBRARY TAB */}
         {activeTab === "library" && (
           selectedPlaylist ? (
             <PlaylistDetailView
@@ -828,16 +1164,15 @@ function MainContent() {
               currentTrackId={playerState.currentTrack?.id}
               isPlaying={playerState.playing}
               onBack={() => setSelectedPlaylist(null)}
-              onPlaySong={(t, q) => handlePlaySong(t, q)}
+              onPlaySong={(t, q) => void handlePlaySong(t, q)}
               onPlayAll={(tracks) => {
-                if (tracks.length > 0) handlePlaySong(tracks[0], tracks, 0);
+                if (tracks.length > 0) void handlePlaySong(tracks[0], tracks, 0);
               }}
               onToggleFavorite={handleToggleFavorite}
               isFavorite={(id) => favorites.some((f) => f.id === id)}
             />
           ) : (
             <View style={styles.queueContainer}>
-              {/* Library Subtabs Row + Discreet Tucked-Away Fetch Toggle */}
               <View style={styles.subtabRow}>
                 <ScrollView
                   horizontal
@@ -913,7 +1248,6 @@ function MainContent() {
                   </TouchableOpacity>
                 </ScrollView>
 
-                {/* Tucked-away discreet Library Fetch icon button */}
                 <TouchableOpacity
                   style={[
                     styles.discreetFetchBtn,
@@ -929,7 +1263,6 @@ function MainContent() {
                 </TouchableOpacity>
               </View>
 
-              {/* Collapsible Tucked-Away Library Fetch Drawer */}
               {libraryFetchExpanded && (
                 <View style={styles.hiddenFetchDrawer}>
                   <View style={styles.hiddenFetchActions}>
@@ -960,7 +1293,7 @@ function MainContent() {
                 </View>
               )}
 
-              {/* 3A. Playlists Subtab (Borrowed Spotify Playlists + PC Playlists) */}
+              {/* 3A. Playlists Subtab */}
               {librarySubTab === "playlists" && (
                 allPlaylists.length > 0 ? (
                   <FlatList
@@ -1038,7 +1371,7 @@ function MainContent() {
                         isPlaying={playerState.currentTrack?.id === item.id && playerState.playing}
                         isCurrent={playerState.currentTrack?.id === item.id}
                         isFavorite={true}
-                        onPlay={(t) => handlePlaySong(t, favorites)}
+                        onPlay={(t) => void handlePlaySong(t, favorites)}
                         onToggleFavorite={handleToggleFavorite}
                       />
                     )}
@@ -1055,7 +1388,7 @@ function MainContent() {
                 )
               )}
 
-              {/* 3C. Offline Downloads Subtab (Moved inside Library!) */}
+              {/* 3C. Offline Downloads Subtab */}
               {librarySubTab === "offline" && (
                 downloadedTracks.length > 0 ? (
                   <FlatList
@@ -1075,7 +1408,7 @@ function MainContent() {
                             }
                             isCurrent={playerState.currentTrack?.id === item.id}
                             isFavorite={favorites.some((f) => f.id === item.id)}
-                            onPlay={(t) => handlePlaySong(t, downloadedTracks)}
+                            onPlay={(t) => void handlePlaySong(t, downloadedTracks)}
                             onToggleFavorite={handleToggleFavorite}
                           />
                         </View>
@@ -1141,13 +1474,13 @@ function MainContent() {
       {/* Floating Bottom Mini Player */}
       <MiniPlayer
         playerState={playerState}
-        onTogglePlay={handleTogglePlay}
+        onTogglePlay={() => void handleTogglePlay()}
         onNext={handleNext}
         onPrev={handlePrev}
         onPress={() => setFullPlayerVisible(true)}
       />
 
-      {/* 3-Tab Bottom Navigation Bar (Home, Search, Library) */}
+      {/* 3-Tab Bottom Navigation Bar */}
       <BottomNavBar
         activeTab={activeTab}
         onSelectTab={(tab) => {
@@ -1157,18 +1490,18 @@ function MainContent() {
         bottomInset={insets.bottom}
       />
 
-      {/* Expanded Full Screen Player Modal with Draggable Scrubber */}
+      {/* Expanded Full Screen Player Modal */}
       <FullPlayer
         visible={fullPlayerVisible}
         playerState={playerState}
         playbackTarget={playbackTarget}
-        serverHostname={playbackTarget === "phone" ? "This Phone" : `${hostname}`}
+        serverHostname={hostname}
         isFavorite={
           !!playerState.currentTrack &&
           favorites.some((f) => f.id === playerState.currentTrack?.id)
         }
         onClose={() => setFullPlayerVisible(false)}
-        onTogglePlay={handleTogglePlay}
+        onTogglePlay={() => void handleTogglePlay()}
         onNext={handleNext}
         onPrev={handlePrev}
         onSeek={handleSeek}
@@ -1182,19 +1515,26 @@ function MainContent() {
       {/* PC Connection Modal */}
       <ConnectModal
         visible={connectModalVisible}
-        onClose={() => setConnectModalVisible(false)}
+        onClose={() => {
+          pendingSwitchToPcRef.current = false;
+          setConnectModalVisible(false);
+        }}
         onConnected={(host) => {
           setHostname(host);
+          connectedRef.current = true;
           setConnected(true);
-          setPlaybackTarget("pc");
           fetchPCLibrary().then((lib) => {
             if (lib?.playlists) setPcPlaylists(lib.playlists);
           });
           spotifyService.refreshPlaylists();
+          if (pendingSwitchToPcRef.current) {
+            pendingSwitchToPcRef.current = false;
+            void switchToPC();
+          }
         }}
       />
 
-      {/* Library Fetch: In-App Spotify Login, Playlist/Liked Borrow Picker & Import Link Modal */}
+      {/* Library Fetch Modal */}
       <SpotifyLoginModal
         visible={spotifyModalVisible}
         initialTab={spotifyModalInitialTab}
@@ -1242,6 +1582,7 @@ const styles = StyleSheet.create({
   root: {
     flex: 1,
     backgroundColor: Colors.base,
+    position: "relative",
   },
   header: {
     flexDirection: "row",
@@ -1249,6 +1590,8 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     paddingHorizontal: 16,
     paddingBottom: 10,
+    backgroundColor: "transparent",
+    zIndex: 2,
   },
   brandRow: {
     flexDirection: "row",
@@ -1274,13 +1617,6 @@ const styles = StyleSheet.create({
     position: "relative",
     width: 30,
     height: 30,
-  },
-  accountAvatarImg: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    borderWidth: 1,
-    borderColor: Colors.hairline,
   },
   accountAvatarInitialBox: {
     width: 30,
@@ -1310,7 +1646,7 @@ const styles = StyleSheet.create({
     width: 30,
     height: 30,
     borderRadius: 15,
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    backgroundColor: "rgba(255, 255, 255, 0.08)",
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: Colors.hairline,
     alignItems: "center",
@@ -1318,10 +1654,10 @@ const styles = StyleSheet.create({
   },
   modeSwitcher: {
     flexDirection: "row",
-    backgroundColor: "rgba(255, 255, 255, 0.04)",
+    backgroundColor: "rgba(0, 0, 0, 0.38)",
     borderRadius: 20,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: Colors.hairline,
+    borderColor: "rgba(255, 255, 255, 0.14)",
     padding: 2,
   },
   targetBtn: {
@@ -1333,7 +1669,7 @@ const styles = StyleSheet.create({
     gap: 5,
   },
   targetBtnActive: {
-    backgroundColor: "rgba(255, 255, 255, 0.15)",
+    backgroundColor: "rgba(255, 255, 255, 0.16)",
   },
   targetBtnText: {
     fontSize: 11,
@@ -1357,36 +1693,21 @@ const styles = StyleSheet.create({
   },
   contentArea: {
     flex: 1,
+    zIndex: 1,
   },
   homeScrollContent: {
     paddingBottom: 24,
   },
-  bannerRow: {
-    marginHorizontal: 16,
-    marginVertical: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 8,
-    backgroundColor: "rgba(255, 255, 255, 0.04)",
-    borderWidth: 1,
-    borderColor: Colors.hairline,
-  },
-  bannerText: {
-    fontSize: 11.5,
-    fontWeight: "500",
-    color: Colors.inkDim,
-    textAlign: "center",
-  },
   sectionHeaderRow: {
     paddingHorizontal: 16,
     marginTop: 14,
-    marginBottom: 8,
+    marginBottom: 10,
   },
   sectionTitle: {
     fontSize: 20,
     fontWeight: "800",
     color: Colors.inkHi,
-    letterSpacing: -0.3,
+    letterSpacing: -0.35,
   },
   quickGrid: {
     flexDirection: "row",
@@ -1406,12 +1727,12 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   moodChip: {
-    paddingHorizontal: 14,
+    paddingHorizontal: 15,
     paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: "rgba(255, 255, 255, 0.05)",
+    borderRadius: 999,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: Colors.hairline,
+    borderColor: "rgba(255, 255, 255, 0.10)",
   },
   moodChipText: {
     fontSize: 12.5,
@@ -1424,14 +1745,14 @@ const styles = StyleSheet.create({
   searchBar: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: Colors.panel,
+    backgroundColor: "rgba(28, 28, 30, 0.85)",
     marginHorizontal: 16,
     marginVertical: 8,
     borderRadius: 24,
     paddingHorizontal: 14,
     height: 44,
-    borderWidth: 1,
-    borderColor: Colors.hairline,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255, 255, 255, 0.12)",
   },
   searchIcon: {
     marginRight: 8,
@@ -1455,8 +1776,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 6,
     borderRadius: 16,
-    backgroundColor: Colors.panel,
-    borderWidth: 1,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: Colors.hairline,
   },
   activeChip: {
@@ -1542,7 +1863,7 @@ const styles = StyleSheet.create({
   },
   discreetFetchBtnActive: {
     backgroundColor: Colors.panel,
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: Colors.hairline,
   },
   hiddenFetchDrawer: {
@@ -1551,7 +1872,7 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     padding: 10,
     borderRadius: 10,
-    backgroundColor: "rgba(255, 255, 255, 0.04)",
+    backgroundColor: "rgba(255, 255, 255, 0.05)",
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: Colors.hairline,
   },
@@ -1569,7 +1890,7 @@ const styles = StyleSheet.create({
     paddingVertical: 9,
     paddingHorizontal: 10,
     borderRadius: 8,
-    backgroundColor: "rgba(255, 255, 255, 0.05)",
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: Colors.hairline,
   },
@@ -1584,7 +1905,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 16,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "rgba(255, 255, 255, 0.04)",
+    borderBottomColor: "rgba(255, 255, 255, 0.05)",
   },
   playlistThumbWrapper: {
     width: 48,
@@ -1594,7 +1915,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     overflow: "hidden",
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: Colors.artworkBorder,
   },
   playlistThumb: {

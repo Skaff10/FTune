@@ -66,9 +66,9 @@ export const BottomNavBar: React.FC<BottomNavBarProps> = ({
 const styles = StyleSheet.create({
   container: {
     flexDirection: "row",
-    backgroundColor: "#0D0D0F",
+    backgroundColor: "#08080A",
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: Colors.hairline,
+    borderTopColor: "rgba(255, 255, 255, 0.10)",
     paddingTop: 8,
     justifyContent: "space-around",
     alignItems: "center",
