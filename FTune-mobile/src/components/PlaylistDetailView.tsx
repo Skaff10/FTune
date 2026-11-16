@@ -15,7 +15,6 @@ import type { PCPlaylist, Track } from "../types";
 import { SongRow } from "./SongRow";
 import { downloadTrack, isTrackDownloaded } from "../services/downloadManager";
 import { spotifyService } from "../services/spotify";
-import { SpringTouchable, AmbientGlow } from "./AnimatedComponents";
 
 interface PlaylistDetailViewProps {
   playlist: PCPlaylist;
@@ -96,41 +95,36 @@ export const PlaylistDetailView: React.FC<PlaylistDetailViewProps> = ({
       </View>
 
       {/* Hero Header */}
-      <AmbientGlow color="rgba(255, 255, 255, 0.05)" intensity={0.15}>
-        <View style={styles.hero}>
-          <Image source={{ uri: firstCover }} style={styles.heroCover} />
-          <View style={styles.heroInfo}>
-            <Text style={styles.playlistType}>
-              {playlist.source === "spotify" ? "BORROWED PLAYLIST" : "PLAYLIST"}
-            </Text>
-            <Text style={styles.playlistName} numberOfLines={2}>
-              {playlist.name}
-            </Text>
-            <Text style={styles.trackCount}>
-              {playlist.owner ? `By ${playlist.owner} • ` : ""}
-              {tracks.length} songs
-            </Text>
-          </View>
+      <View style={styles.hero}>
+        <Image source={{ uri: firstCover }} style={styles.heroCover} />
+        <View style={styles.heroInfo}>
+          <Text style={styles.playlistType}>
+            {playlist.source === "spotify" ? "SPOTIFY PLAYLIST" : "PLAYLIST"}
+          </Text>
+          <Text style={styles.playlistName} numberOfLines={2}>
+            {playlist.name}
+          </Text>
+          <Text style={styles.trackCount}>{tracks.length} songs</Text>
         </View>
-      </AmbientGlow>
+      </View>
 
       {/* Action Buttons: Play All & Download Playlist */}
       <View style={styles.actionsBar}>
-        <SpringTouchable
+        <TouchableOpacity
           style={styles.playAllBtn}
           onPress={() => onPlayAll(tracks)}
           disabled={tracks.length === 0}
-          activeScale={0.95}
+          activeOpacity={0.75}
         >
           <Play size={18} color="#000000" fill="#000000" style={{ marginRight: 6 }} />
           <Text style={styles.playAllText}>Play All</Text>
-        </SpringTouchable>
+        </TouchableOpacity>
 
-        <SpringTouchable
+        <TouchableOpacity
           style={styles.downloadAllBtn}
           onPress={handleDownloadAll}
           disabled={downloadingAll || tracks.length === 0}
-          activeScale={0.95}
+          activeOpacity={0.75}
         >
           {downloadingAll ? (
             <>
@@ -145,13 +139,17 @@ export const PlaylistDetailView: React.FC<PlaylistDetailViewProps> = ({
               <Text style={styles.downloadAllText}>Download</Text>
             </>
           )}
-        </SpringTouchable>
+        </TouchableOpacity>
       </View>
 
       {/* Tracks List */}
       <FlatList
         data={tracks}
         keyExtractor={(item, index) => `${item.id}-${index}`}
+        initialNumToRender={12}
+        maxToRenderPerBatch={10}
+        windowSize={5}
+        removeClippedSubviews={true}
         renderItem={({ item }) => (
           <SongRow
             track={item}

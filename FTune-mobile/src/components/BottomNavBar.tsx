@@ -66,7 +66,7 @@ export const BottomNavBar: React.FC<BottomNavBarProps> = ({
 const styles = StyleSheet.create({
   container: {
     flexDirection: "row",
-    backgroundColor: Colors.panel,
+    backgroundColor: "#0D0D0F",
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: Colors.hairline,
     paddingTop: 8,

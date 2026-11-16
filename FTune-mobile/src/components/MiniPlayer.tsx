@@ -3,7 +3,7 @@ import { View, Text, Image, StyleSheet, TouchableOpacity, PanResponder } from "r
 import { Play, Pause, SkipForward, SkipBack } from "lucide-react-native";
 import { Colors } from "../theme/colors";
 import type { RemotePlayerState } from "../types";
-import { EqBars, SpringTouchable } from "./AnimatedComponents";
+import { EqBars } from "./AnimatedComponents";
 
 interface MiniPlayerProps {
   playerState: RemotePlayerState;
@@ -22,22 +22,17 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
 }) => {
   const track = playerState.currentTrack;
 
-  // Swipe Gestures on MiniPlayer:
-  // Swipe Left -> Next
-  // Swipe Right -> Prev
-  // Swipe Up -> Open FullPlayer
   const panResponder = useRef(
     PanResponder.create({
-      onMoveShouldSetPanResponder: (_, gesture) => {
-        return Math.abs(gesture.dx) > 15 || Math.abs(gesture.dy) > 15;
-      },
+      onMoveShouldSetPanResponder: (_, gesture) =>
+        Math.abs(gesture.dx) > 15 || Math.abs(gesture.dy) > 15,
       onPanResponderRelease: (_, gesture) => {
         if (gesture.dy < -40 && Math.abs(gesture.dx) < 40) {
-          onPress(); // Swipe up expands player
+          onPress();
         } else if (gesture.dx < -40 && Math.abs(gesture.dy) < 40) {
-          onNext(); // Swipe left skips to next
+          onNext();
         } else if (gesture.dx > 40 && Math.abs(gesture.dy) < 40) {
-          onPrev(); // Swipe right skips to prev
+          onPrev();
         }
       },
     })
@@ -53,12 +48,7 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
 
   return (
     <View style={styles.outerWrapper} {...panResponder.panHandlers}>
-      <TouchableOpacity
-        style={styles.card}
-        activeOpacity={0.92}
-        onPress={onPress}
-      >
-        {/* Sleek top progress bar */}
+      <TouchableOpacity style={styles.card} activeOpacity={0.88} onPress={onPress}>
         <View style={styles.progressTrack}>
           <View style={[styles.progressBar, { width: `${progressPercent}%` }]} />
         </View>
@@ -91,10 +81,10 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
             </Text>
           </View>
 
-          {/* Transport buttons: Prev, Play/Pause, Next */}
           <View style={styles.controls}>
             <TouchableOpacity
               style={styles.button}
+              activeOpacity={0.65}
               onPress={(e) => {
                 e.stopPropagation();
                 onPrev();
@@ -104,25 +94,29 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
               <SkipBack size={17} color={Colors.inkHi} fill={Colors.inkHi} />
             </TouchableOpacity>
 
-            <SpringTouchable
+            <TouchableOpacity
               style={styles.playButton}
-              onPress={onTogglePlay}
-              activeScale={0.9}
+              activeOpacity={0.75}
+              onPress={(e) => {
+                e.stopPropagation();
+                onTogglePlay();
+              }}
             >
               {playerState.playing ? (
-                <Pause size={17} color="#000000" fill="#000000" />
+                <Pause size={16} color="#000000" fill="#000000" />
               ) : (
                 <Play
-                  size={17}
+                  size={16}
                   color="#000000"
                   fill="#000000"
-                  style={{ marginLeft: 2 }}
+                  style={{ marginLeft: 1.5 }}
                 />
               )}
-            </SpringTouchable>
+            </TouchableOpacity>
 
             <TouchableOpacity
               style={styles.button}
+              activeOpacity={0.65}
               onPress={(e) => {
                 e.stopPropagation();
                 onNext();
@@ -145,21 +139,16 @@ const styles = StyleSheet.create({
     backgroundColor: "transparent",
   },
   card: {
-    backgroundColor: Colors.panel,
-    borderRadius: 14,
-    borderWidth: 0.5,
+    backgroundColor: "rgba(17, 17, 19, 0.96)",
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: Colors.hairline,
     overflow: "hidden",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.55,
-    shadowRadius: 12,
-    elevation: 10,
   },
   progressTrack: {
-    height: 2.5,
+    height: 2,
     width: "100%",
-    backgroundColor: "rgba(255, 255, 255, 0.12)",
+    backgroundColor: "rgba(255, 255, 255, 0.10)",
   },
   progressBar: {
     height: "100%",
@@ -172,11 +161,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
   },
   thumbWrapper: {
-    width: 44,
-    height: 44,
-    borderRadius: 8,
+    width: 42,
+    height: 42,
+    borderRadius: 6,
     overflow: "hidden",
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: Colors.artworkBorder,
     marginRight: 10,
   },
@@ -195,7 +184,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   title: {
-    fontSize: 14,
+    fontSize: 13.5,
     fontWeight: "600",
     color: Colors.inkHi,
     letterSpacing: -0.2,
@@ -209,7 +198,7 @@ const styles = StyleSheet.create({
   controls: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 6,
   },
   button: {
     padding: 6,
@@ -218,15 +207,11 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   playButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     backgroundColor: Colors.primary,
     alignItems: "center",
     justifyContent: "center",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
   },
 });

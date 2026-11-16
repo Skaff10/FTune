@@ -143,3 +143,20 @@ export interface SongMatch {
   matchedTrack: Track | null;
   status: "idle" | "matching" | "matched" | "missing";
 }
+
+export interface CloudUserAccount {
+  id: string;
+  username: string;
+  displayName: string;
+  accessToken: string;
+  refreshToken: string;
+  expiresAt?: number;
+}
+
+export interface CloudSyncStatus {
+  signedIn: boolean;
+  user: CloudUserAccount | null;
+  syncing: boolean;
+  lastSyncedAt: number | null;
+  error: string | null;
+}

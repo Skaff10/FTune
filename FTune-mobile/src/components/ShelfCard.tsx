@@ -1,9 +1,8 @@
 import React from "react";
-import { View, Text, Image, StyleSheet } from "react-native";
+import { View, Text, Image, StyleSheet, TouchableOpacity } from "react-native";
 import { Play } from "lucide-react-native";
 import { Colors } from "../theme/colors";
 import type { Track } from "../types";
-import { SpringTouchable } from "./AnimatedComponents";
 
 interface ShelfCardProps {
   track: Track;
@@ -12,14 +11,22 @@ interface ShelfCardProps {
 
 export const ShelfCard: React.FC<ShelfCardProps> = ({ track, onPlay }) => {
   return (
-    <SpringTouchable style={styles.card} activeScale={0.96} onPress={() => onPlay(track)}>
+    <TouchableOpacity
+      style={styles.card}
+      activeOpacity={0.75}
+      onPress={() => onPlay(track)}
+    >
       <View style={styles.artworkWrapper}>
         <Image
-          source={{ uri: track.thumb || "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=240" }}
+          source={{
+            uri:
+              track.thumb ||
+              "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=240",
+          }}
           style={styles.artwork}
         />
         <View style={styles.playOverlay}>
-          <Play size={15} color="#000000" fill="#000000" style={{ marginLeft: 2 }} />
+          <Play size={14} color="#000000" fill="#000000" style={{ marginLeft: 1.5 }} />
         </View>
       </View>
       <Text style={styles.title} numberOfLines={1}>
@@ -28,7 +35,7 @@ export const ShelfCard: React.FC<ShelfCardProps> = ({ track, onPlay }) => {
       <Text style={styles.artist} numberOfLines={1}>
         {track.artist}
       </Text>
-    </SpringTouchable>
+    </TouchableOpacity>
   );
 };
 
@@ -40,11 +47,11 @@ const styles = StyleSheet.create({
   artworkWrapper: {
     width: 140,
     height: 140,
-    borderRadius: 12,
+    borderRadius: 10,
     overflow: "hidden",
     position: "relative",
-    backgroundColor: Colors.panel,
-    borderWidth: 1,
+    backgroundColor: "rgba(255, 255, 255, 0.04)",
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: Colors.artworkBorder,
     marginBottom: 8,
   },
@@ -56,17 +63,12 @@ const styles = StyleSheet.create({
     position: "absolute",
     bottom: 8,
     right: 8,
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
     backgroundColor: Colors.inkHi,
     justifyContent: "center",
     alignItems: "center",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.35,
-    shadowRadius: 5,
-    elevation: 4,
   },
   title: {
     fontSize: 13.5,

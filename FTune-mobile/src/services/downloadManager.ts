@@ -6,6 +6,7 @@ const DOWNLOADS_DIR = `${FileSystem.documentDirectory}ftune_downloads/`;
 const INDEX_FILE = `${DOWNLOADS_DIR}index.json`;
 
 let cachedIndex: Record<string, DownloadItem> | null = null;
+const downloadedIdSet = new Set<string>();
 const listeners = new Set<(tracks: Track[]) => void>();
 
 export function subscribeDownloads(cb: (tracks: Track[]) => void): () => void {
@@ -45,7 +46,15 @@ async function loadIndex(): Promise<Record<string, DownloadItem>> {
   } catch {
     cachedIndex = {};
   }
+  downloadedIdSet.clear();
+  for (const key of Object.keys(cachedIndex || {})) {
+    downloadedIdSet.add(key);
+  }
   return cachedIndex || {};
+}
+
+export function isTrackDownloadedSync(trackId: string): boolean {
+  return downloadedIdSet.has(trackId);
 }
 
 async function saveIndex(): Promise<void> {
@@ -132,6 +141,7 @@ export async function downloadTrack(
     const index = await loadIndex();
     index[track.id] = item;
     cachedIndex = index;
+    downloadedIdSet.add(track.id);
     await saveIndex();
 
     return result.uri;
@@ -152,6 +162,7 @@ export async function deleteDownloadedTrack(trackId: string): Promise<boolean> {
       }
       delete index[trackId];
       cachedIndex = index;
+      downloadedIdSet.delete(trackId);
       await saveIndex();
       return true;
     }

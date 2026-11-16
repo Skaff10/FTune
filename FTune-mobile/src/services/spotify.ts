@@ -249,6 +249,7 @@ class SpotifyMobileService {
   private hashes: Record<OperationName, string> = { ...KNOWN_HASHES };
   private playerSecret: { version: number; secret: string } = { ...DEFAULT_SECRET };
   private listeners: Set<(status: SpotifyStatus) => void> = new Set();
+  public onLibraryMutated: (() => void) | null = null;
 
   constructor() {
     this.loadPersistedState();
@@ -1095,6 +1096,7 @@ class SpotifyMobileService {
     ]);
 
     this.notify();
+    this.onLibraryMutated?.();
     return { borrowed: newlyBorrowed, likedTracks: borrowedLikedTracks };
   }
 
@@ -1137,6 +1139,7 @@ class SpotifyMobileService {
     ]);
 
     this.notify();
+    this.onLibraryMutated?.();
     return playlistObj;
   }
 
@@ -1146,6 +1149,88 @@ class SpotifyMobileService {
   public async removeBorrowedPlaylist(playlistId: string): Promise<PCPlaylist[]> {
     this.borrowedPlaylists = this.borrowedPlaylists.filter((p) => p.id !== playlistId);
     await AsyncStorage.setItem(STORAGE_KEYS.BORROWED, JSON.stringify(this.borrowedPlaylists));
+    this.notify();
+    this.onLibraryMutated?.();
+    return this.borrowedPlaylists;
+  }
+
+  /**
+   * Snapshot of borrowed playlists, song catalog, and match cache for Google Drive cloud sync
+   */
+  public getSyncSnapshot(): {
+    playlists: PCPlaylist[];
+    songCatalog: Record<string, ImportSong>;
+    matchCache: Record<string, Track>;
+  } {
+    return {
+      playlists: this.borrowedPlaylists,
+      songCatalog: this.songCatalog,
+      matchCache: this.matchCache,
+    };
+  }
+
+  /**
+   * Apply or merge a Google Drive cloud snapshot into the local Mobile Library
+   */
+  public async applySyncSnapshot(
+    snapshot: {
+      playlists?: PCPlaylist[];
+      songCatalog?: Record<string, ImportSong>;
+      matchCache?: Record<string, Track>;
+    },
+    replaceAll = false
+  ): Promise<PCPlaylist[]> {
+    if (replaceAll) {
+      this.borrowedPlaylists = Array.isArray(snapshot.playlists) ? snapshot.playlists : [];
+      this.songCatalog = snapshot.songCatalog || {};
+      this.matchCache = snapshot.matchCache || {};
+    } else {
+      // Merge playlists by id or name (remote playlists + local playlists)
+      const remoteLists = Array.isArray(snapshot.playlists) ? snapshot.playlists : [];
+      const mergedMap = new Map<string, PCPlaylist>();
+      for (const p of this.borrowedPlaylists) {
+        mergedMap.set(p.id, p);
+      }
+      for (const rp of remoteLists) {
+        if (!rp?.id) continue;
+        const existing = mergedMap.get(rp.id);
+        if (!existing || (rp.tracks?.length || 0) >= (existing.tracks?.length || 0)) {
+          mergedMap.set(rp.id, rp);
+        }
+      }
+      this.borrowedPlaylists = Array.from(mergedMap.values());
+
+      if (snapshot.songCatalog && typeof snapshot.songCatalog === "object") {
+        this.songCatalog = { ...snapshot.songCatalog, ...this.songCatalog };
+      }
+      if (snapshot.matchCache && typeof snapshot.matchCache === "object") {
+        this.matchCache = { ...snapshot.matchCache, ...this.matchCache };
+      }
+    }
+
+    // Also ensure every track in borrowedPlaylists is registered in songCatalog for lazy matching
+    for (const pl of this.borrowedPlaylists) {
+      for (const tr of pl.tracks || []) {
+        if (tr.id?.startsWith("sp_") && !this.songCatalog[tr.id]) {
+          this.songCatalog[tr.id] = {
+            spotifyId: tr.spotifyId || tr.id.replace(/^sp_/, ""),
+            title: tr.title,
+            artist: tr.artist,
+            album: tr.album,
+            duration: tr.duration,
+            thumb: tr.thumb,
+            explicit: tr.explicit,
+          };
+        }
+      }
+    }
+
+    await Promise.all([
+      AsyncStorage.setItem(STORAGE_KEYS.BORROWED, JSON.stringify(this.borrowedPlaylists)),
+      AsyncStorage.setItem(STORAGE_KEYS.CATALOG, JSON.stringify(this.songCatalog)),
+      AsyncStorage.setItem(STORAGE_KEYS.MATCHES, JSON.stringify(this.matchCache)),
+    ]);
+
     this.notify();
     return this.borrowedPlaylists;
   }

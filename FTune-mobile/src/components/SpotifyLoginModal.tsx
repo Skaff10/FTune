@@ -29,7 +29,6 @@ import { Colors } from "../theme/colors";
 import { SpotifyIcon, SPOTIFY_GREEN } from "./SpotifyIcon";
 import { spotifyService, LIKED_ID, LIKED_SLEEVE } from "../services/spotify";
 import { isServerConnected } from "../services/api";
-import { SpringTouchable } from "./AnimatedComponents";
 import type { PCPlaylist, SpotifyPlaylistInfo, Track } from "../types";
 
 interface SpotifyLoginModalProps {
@@ -474,7 +473,7 @@ export const SpotifyLoginModal: React.FC<SpotifyLoginModalProps> = ({
         <View style={styles.header}>
           <View style={styles.headerTitleRow}>
             <SpotifyIcon size={22} />
-            <Text style={styles.headerTitle}>Library Fetch & Borrow</Text>
+            <Text style={styles.headerTitle}>Fetch Spotify Playlist</Text>
           </View>
           <TouchableOpacity
             onPress={onClose}
@@ -492,7 +491,7 @@ export const SpotifyLoginModal: React.FC<SpotifyLoginModalProps> = ({
             onPress={() => setActiveTab("login")}
           >
             <Text style={[styles.subtabText, activeTab === "login" && styles.subtabTextActive]}>
-              {isConnected ? "Borrow Playlists" : "Spotify Login"}
+              {isConnected ? "Fetch Playlists" : "Spotify Login"}
             </Text>
           </TouchableOpacity>
 
@@ -501,7 +500,7 @@ export const SpotifyLoginModal: React.FC<SpotifyLoginModalProps> = ({
             onPress={() => setActiveTab("link")}
           >
             <Text style={[styles.subtabText, activeTab === "link" && styles.subtabTextActive]}>
-              Import Link
+              Import Playlist
             </Text>
           </TouchableOpacity>
 
@@ -705,31 +704,33 @@ export const SpotifyLoginModal: React.FC<SpotifyLoginModalProps> = ({
                     </View>
                   ) : (
                     <View style={styles.borrowFooterBtns}>
-                      <SpringTouchable
+                      <TouchableOpacity
                         style={[
                           styles.borrowSelectedBtn,
                           selectedIds.size === 0 && { opacity: 0.45 },
                         ]}
+                        activeOpacity={0.75}
                         disabled={selectedIds.size === 0}
                         onPress={() => handleBorrowPlaylists(Array.from(selectedIds))}
                       >
                         <Download size={16} color="#000000" style={{ marginRight: 6 }} />
                         <Text style={styles.borrowSelectedBtnText}>
                           {allSelected
-                            ? `Borrow All (${availablePlaylists.length})`
-                            : `Borrow Selected (${selectedIds.size})`}
+                            ? `Fetch All (${availablePlaylists.length})`
+                            : `Fetch Selected (${selectedIds.size})`}
                         </Text>
-                      </SpringTouchable>
+                      </TouchableOpacity>
 
                       {!allSelected && availablePlaylists.length > 1 && (
-                        <SpringTouchable
+                        <TouchableOpacity
                           style={styles.borrowAllSecondaryBtn}
+                          activeOpacity={0.75}
                           onPress={() =>
                             handleBorrowPlaylists(availablePlaylists.map((p) => p.id))
                           }
                         >
-                          <Text style={styles.borrowAllSecondaryText}>Borrow Everyone</Text>
-                        </SpringTouchable>
+                          <Text style={styles.borrowAllSecondaryText}>Fetch All</Text>
+                        </TouchableOpacity>
                       )}
                     </View>
                   )}
@@ -744,9 +745,9 @@ export const SpotifyLoginModal: React.FC<SpotifyLoginModalProps> = ({
           <View style={styles.formContainer}>
             <View style={styles.pcHeroCard}>
               <Link2 size={40} color={SPOTIFY_GREEN} />
-              <Text style={styles.pcHeroTitle}>Import Spotify Link</Text>
+              <Text style={styles.pcHeroTitle}>Import Spotify Playlist</Text>
               <Text style={styles.pcHeroSubtitle}>
-                Paste any Spotify playlist, album, or share link below. FTune will fetch all tracks and borrow it directly into your Library!
+                Paste a Spotify playlist or album link below.
               </Text>
 
               <View style={styles.urlInputBox}>
@@ -767,26 +768,27 @@ export const SpotifyLoginModal: React.FC<SpotifyLoginModalProps> = ({
                 )}
               </View>
 
-              <SpringTouchable
+              <TouchableOpacity
                 style={[
                   styles.primaryActionBtn,
                   (importing || !publicUrl.trim()) && { opacity: 0.6 },
                 ]}
+                activeOpacity={0.75}
                 onPress={handleImportPublicLink}
                 disabled={importing || !publicUrl.trim()}
               >
                 {importing ? (
                   <>
                     <ActivityIndicator size="small" color="#000000" style={{ marginRight: 8 }} />
-                    <Text style={styles.primaryActionBtnText}>Importing into Library...</Text>
+                    <Text style={styles.primaryActionBtnText}>Importing...</Text>
                   </>
                 ) : (
                   <>
                     <ExternalLink size={18} color="#000000" style={{ marginRight: 8 }} />
-                    <Text style={styles.primaryActionBtnText}>Import & Borrow Playlist</Text>
+                    <Text style={styles.primaryActionBtnText}>Import Spotify Playlist</Text>
                   </>
                 )}
-              </SpringTouchable>
+              </TouchableOpacity>
             </View>
           </View>
         )}
@@ -799,12 +801,13 @@ export const SpotifyLoginModal: React.FC<SpotifyLoginModalProps> = ({
               <Text style={styles.pcHeroTitle}>Sync with FTune Desktop</Text>
               <Text style={styles.pcHeroSubtitle}>
                 {isServerConnected()
-                  ? "Your phone is connected to FTune on PC! Tap below to load your PC's Spotify playlists and choose which ones to borrow."
-                  : "Connect your phone to FTune Desktop on the same Wi-Fi network to sync your PC's Spotify playlists."}
+                  ? "Connected to FTune PC. Fetch your PC playlists below."
+                  : "Connect to FTune Desktop on the same Wi-Fi network."}
               </Text>
 
-              <SpringTouchable
+              <TouchableOpacity
                 style={[styles.primaryActionBtn, pcSyncing && { opacity: 0.7 }]}
+                activeOpacity={0.75}
                 onPress={handleSyncPC}
                 disabled={pcSyncing}
               >
@@ -816,7 +819,7 @@ export const SpotifyLoginModal: React.FC<SpotifyLoginModalProps> = ({
                     <Text style={styles.primaryActionBtnText}>Fetch Playlists from PC</Text>
                   </>
                 )}
-              </SpringTouchable>
+              </TouchableOpacity>
             </View>
           </View>
         )}

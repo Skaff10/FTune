@@ -30,6 +30,7 @@ import {
   Trash2,
   SlidersHorizontal,
   Link2,
+  User,
 } from "lucide-react-native";
 import { Colors } from "./src/theme/colors";
 import type {
@@ -39,6 +40,7 @@ import type {
   SearchFilter,
   Track,
   SpotifyStatus,
+  CloudSyncStatus,
 } from "./src/types";
 import {
   initServerAddress,
@@ -65,8 +67,10 @@ import { QuickTile } from "./src/components/QuickTile";
 import { ShelfCard } from "./src/components/ShelfCard";
 import { PlaylistDetailView } from "./src/components/PlaylistDetailView";
 import { SpotifyLoginModal } from "./src/components/SpotifyLoginModal";
+import { AccountModal } from "./src/components/AccountModal";
 import { SpotifyIcon, SPOTIFY_GREEN } from "./src/components/SpotifyIcon";
 import { FTuneLogo } from "./src/components/FTuneLogo";
+import { cloudAccountService } from "./src/services/cloudAccount";
 import {
   getOfflineFavorites,
   toggleOfflineFavorite,
@@ -165,6 +169,10 @@ function MainContent() {
   // Modals
   const [connectModalVisible, setConnectModalVisible] = useState(false);
   const [fullPlayerVisible, setFullPlayerVisible] = useState(false);
+  const [accountModalVisible, setAccountModalVisible] = useState(false);
+  const [cloudSyncStatus, setCloudSyncStatus] = useState<CloudSyncStatus>(
+    cloudAccountService.getStatus()
+  );
 
   // Unified Player State
   const [playerState, setPlayerState] = useState<RemotePlayerState>({
@@ -258,13 +266,27 @@ function MainContent() {
     }
   }, [playbackTarget, playerState.playing, playerState.duration]);
 
-  // Subscribe to Spotify service & borrowed playlists changes
+  // Subscribe to Spotify service, borrowed playlists, and Cloud Account sync
   useEffect(() => {
     const unsubSpotify = spotifyService.subscribe((status) => {
       setSpotifyStatus(status);
       setBorrowedPlaylists([...spotifyService.getBorrowedPlaylists()]);
     });
-    return unsubSpotify;
+
+    const unsubCloud = cloudAccountService.subscribe((st) => {
+      setCloudSyncStatus(st);
+    });
+
+    cloudAccountService.onLibraryRestored = ({ playlists, favorites: restoredFavs }) => {
+      setBorrowedPlaylists([...playlists]);
+      setFavorites([...restoredFavs]);
+    };
+
+    return () => {
+      unsubSpotify();
+      unsubCloud();
+      cloudAccountService.onLibraryRestored = null;
+    };
   }, []);
 
   // Initialize storage, offline downloads, favorites, and PC connection
@@ -523,6 +545,7 @@ function MainContent() {
     } else {
       setFavorites((prev) => prev.filter((t) => t.id !== track.id));
     }
+    cloudAccountService.scheduleSync();
   };
 
   const handleDeleteDownloaded = async (trackId: string) => {
@@ -566,62 +589,86 @@ function MainContent() {
           <Text style={styles.brandName}>FTune</Text>
         </View>
 
-        {/* Dual Mode Switcher (Phone Standalone vs PC Remote) */}
-        <View style={styles.modeSwitcher}>
-          <TouchableOpacity
-            style={[
-              styles.targetBtn,
-              playbackTarget === "phone" && styles.targetBtnActive,
-            ]}
-            onPress={() => setPlaybackTarget("phone")}
-            activeOpacity={0.8}
-          >
-            <Smartphone
-              size={13}
-              color={playbackTarget === "phone" ? Colors.inkHi : Colors.inkDim}
-            />
-            <Text
+        {/* Right Side: Dual Mode Switcher + Google Account Avatar */}
+        <View style={styles.headerRightRow}>
+          <View style={styles.modeSwitcher}>
+            <TouchableOpacity
               style={[
-                styles.targetBtnText,
-                playbackTarget === "phone" && styles.targetBtnTextActive,
+                styles.targetBtn,
+                playbackTarget === "phone" && styles.targetBtnActive,
               ]}
+              onPress={() => setPlaybackTarget("phone")}
+              activeOpacity={0.8}
             >
-              Phone
-            </Text>
-          </TouchableOpacity>
+              <Smartphone
+                size={13}
+                color={playbackTarget === "phone" ? Colors.inkHi : Colors.inkDim}
+              />
+              <Text
+                style={[
+                  styles.targetBtnText,
+                  playbackTarget === "phone" && styles.targetBtnTextActive,
+                ]}
+              >
+                Phone
+              </Text>
+            </TouchableOpacity>
 
-          <TouchableOpacity
-            style={[
-              styles.targetBtn,
-              playbackTarget === "pc" && styles.targetBtnActive,
-            ]}
-            onPress={() => {
-              if (!connected) {
-                setConnectModalVisible(true);
-              } else {
-                setPlaybackTarget("pc");
-              }
-            }}
-            activeOpacity={0.8}
-          >
-            <View
+            <TouchableOpacity
               style={[
-                styles.statusDot,
-                connected ? styles.dotGreen : styles.dotOrange,
+                styles.targetBtn,
+                playbackTarget === "pc" && styles.targetBtnActive,
               ]}
-            />
-            <Laptop
-              size={13}
-              color={playbackTarget === "pc" ? Colors.inkHi : Colors.inkDim}
-            />
-            <Text
-              style={[
-                styles.targetBtnText,
-                playbackTarget === "pc" && styles.targetBtnTextActive,
-              ]}
+              onPress={() => {
+                if (!connected) {
+                  setConnectModalVisible(true);
+                } else {
+                  setPlaybackTarget("pc");
+                }
+              }}
+              activeOpacity={0.8}
             >
-              PC
-            </Text>
+              <View
+                style={[
+                  styles.statusDot,
+                  connected ? styles.dotGreen : styles.dotOrange,
+                ]}
+              />
+              <Laptop
+                size={13}
+                color={playbackTarget === "pc" ? Colors.inkHi : Colors.inkDim}
+              />
+              <Text
+                style={[
+                  styles.targetBtnText,
+                  playbackTarget === "pc" && styles.targetBtnTextActive,
+                ]}
+              >
+                PC
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Cloud Account Avatar Button */}
+          <TouchableOpacity
+            style={styles.accountAvatarBtn}
+            activeOpacity={0.75}
+            onPress={() => setAccountModalVisible(true)}
+          >
+            {cloudSyncStatus.signedIn && cloudSyncStatus.user ? (
+              <View style={styles.accountAvatarWrap}>
+                <View style={styles.accountAvatarInitialBox}>
+                  <Text style={styles.accountAvatarInitialText}>
+                    {(cloudSyncStatus.user.username || "U")[0].toUpperCase()}
+                  </Text>
+                </View>
+                <View style={styles.accountSyncDot} />
+              </View>
+            ) : (
+              <View style={styles.accountSignInPill}>
+                <User size={14} color={Colors.inkHi} />
+              </View>
+            )}
           </TouchableOpacity>
         </View>
       </View>
@@ -634,15 +681,6 @@ function MainContent() {
             showsVerticalScrollIndicator={false}
             contentContainerStyle={styles.homeScrollContent}
           >
-            {/* Mode Banner Indicator */}
-            <View style={styles.bannerRow}>
-              <Text style={styles.bannerText}>
-                {playbackTarget === "phone"
-                  ? "📱 Solo Phone Mode: Playing directly through your phone"
-                  : `💻 Remote Mode: Playing on ${hostname}`}
-              </Text>
-            </View>
-
             {/* Quick Picks Header */}
             <View style={styles.sectionHeaderRow}>
               <Text style={styles.sectionTitle}>Quick Picks</Text>
@@ -754,6 +792,10 @@ function MainContent() {
               <FlatList
                 data={results}
                 keyExtractor={(item) => item.id}
+                initialNumToRender={12}
+                maxToRenderPerBatch={10}
+                windowSize={5}
+                removeClippedSubviews={true}
                 renderItem={({ item }) => (
                   <SongRow
                     track={item}
@@ -890,42 +932,29 @@ function MainContent() {
               {/* Collapsible Tucked-Away Library Fetch Drawer */}
               {libraryFetchExpanded && (
                 <View style={styles.hiddenFetchDrawer}>
-                  <View style={styles.hiddenFetchHeader}>
-                    <Text style={styles.hiddenFetchLabel}>LIBRARY FETCH & BORROW</Text>
-                    {spotifyStatus.connected && (
-                      <Text style={styles.hiddenFetchConnectedText}>
-                        ● {spotifyStatus.name || "Spotify Connected"}
-                      </Text>
-                    )}
-                  </View>
-
                   <View style={styles.hiddenFetchActions}>
                     <TouchableOpacity
                       style={styles.hiddenFetchOption}
-                      activeOpacity={0.75}
+                      activeOpacity={0.7}
                       onPress={() => {
                         setSpotifyModalInitialTab("login");
                         setSpotifyModalVisible(true);
                       }}
                     >
                       <SpotifyIcon size={16} />
-                      <Text style={styles.hiddenFetchOptionText}>
-                        {spotifyStatus.connected
-                          ? "Borrow Playlists / Liked"
-                          : "Spotify Login & Borrow"}
-                      </Text>
+                      <Text style={styles.hiddenFetchOptionText}>Fetch Spotify Playlist</Text>
                     </TouchableOpacity>
 
                     <TouchableOpacity
                       style={styles.hiddenFetchOption}
-                      activeOpacity={0.75}
+                      activeOpacity={0.7}
                       onPress={() => {
                         setSpotifyModalInitialTab("link");
                         setSpotifyModalVisible(true);
                       }}
                     >
                       <Link2 size={15} color={SPOTIFY_GREEN} />
-                      <Text style={styles.hiddenFetchOptionText}>Import Spotify Link</Text>
+                      <Text style={styles.hiddenFetchOptionText}>Import Spotify Playlist</Text>
                     </TouchableOpacity>
                   </View>
                 </View>
@@ -937,6 +966,10 @@ function MainContent() {
                   <FlatList
                     data={allPlaylists}
                     keyExtractor={(item) => item.id}
+                    initialNumToRender={12}
+                    maxToRenderPerBatch={10}
+                    windowSize={5}
+                    removeClippedSubviews={true}
                     renderItem={({ item }) => {
                       const coverArt = item.thumb || item.tracks?.[0]?.thumb || "";
                       const isBorrowed = item.source === "spotify";
@@ -958,10 +991,7 @@ function MainContent() {
                               {item.name}
                             </Text>
                             <Text style={styles.playlistMeta} numberOfLines={1}>
-                              {isBorrowed
-                                ? `Borrowed${item.owner ? ` • ${item.owner}` : ""}`
-                                : "PC Playlist"}{" "}
-                              • {item.tracks?.length || 0} songs
+                              {item.tracks?.length || 0} songs
                             </Text>
                           </View>
 
@@ -998,6 +1028,10 @@ function MainContent() {
                   <FlatList
                     data={favorites}
                     keyExtractor={(item) => item.id}
+                    initialNumToRender={12}
+                    maxToRenderPerBatch={10}
+                    windowSize={5}
+                    removeClippedSubviews={true}
                     renderItem={({ item }) => (
                       <SongRow
                         track={item}
@@ -1027,6 +1061,10 @@ function MainContent() {
                   <FlatList
                     data={downloadedTracks}
                     keyExtractor={(item) => item.id}
+                    initialNumToRender={12}
+                    maxToRenderPerBatch={10}
+                    windowSize={5}
+                    removeClippedSubviews={true}
                     renderItem={({ item }) => (
                       <View style={styles.downloadRowWrapper}>
                         <View style={{ flex: 1 }}>
@@ -1069,6 +1107,10 @@ function MainContent() {
                   <FlatList
                     data={playerState.queue}
                     keyExtractor={(item, index) => `${item.id}-${index}`}
+                    initialNumToRender={12}
+                    maxToRenderPerBatch={10}
+                    windowSize={5}
+                    removeClippedSubviews={true}
                     renderItem={({ item, index }) => (
                       <SongRow
                         track={item}
@@ -1171,6 +1213,17 @@ function MainContent() {
           if (res?.openPlaylist) {
             setSelectedPlaylist(res.openPlaylist);
           }
+          cloudAccountService.scheduleSync();
+        }}
+      />
+
+      {/* Cloud Account Modal */}
+      <AccountModal
+        visible={accountModalVisible}
+        onClose={() => setAccountModalVisible(false)}
+        onSyncComplete={({ playlists, favorites: syncedFavs }) => {
+          setBorrowedPlaylists([...playlists]);
+          setFavorites([...syncedFavs]);
         }}
       />
     </View>
@@ -1208,11 +1261,66 @@ const styles = StyleSheet.create({
     color: Colors.inkHi,
     letterSpacing: -0.5,
   },
+  headerRightRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  accountAvatarBtn: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  accountAvatarWrap: {
+    position: "relative",
+    width: 30,
+    height: 30,
+  },
+  accountAvatarImg: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: Colors.hairline,
+  },
+  accountAvatarInitialBox: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: Colors.inkHi,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  accountAvatarInitialText: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#000000",
+  },
+  accountSyncDot: {
+    position: "absolute",
+    right: -1,
+    bottom: -1,
+    width: 9,
+    height: 9,
+    borderRadius: 4.5,
+    backgroundColor: Colors.success,
+    borderWidth: 1.5,
+    borderColor: Colors.base,
+  },
+  accountSignInPill: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Colors.hairline,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   modeSwitcher: {
     flexDirection: "row",
-    backgroundColor: Colors.panel,
+    backgroundColor: "rgba(255, 255, 255, 0.04)",
     borderRadius: 20,
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: Colors.hairline,
     padding: 2,
   },
@@ -1301,8 +1409,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: 20,
-    backgroundColor: Colors.panel,
-    borderWidth: 1,
+    backgroundColor: "rgba(255, 255, 255, 0.05)",
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: Colors.hairline,
   },
   moodChipText: {
@@ -1440,29 +1548,12 @@ const styles = StyleSheet.create({
   hiddenFetchDrawer: {
     marginHorizontal: 16,
     marginTop: 6,
-    marginBottom: 10,
-    padding: 12,
-    borderRadius: 12,
-    backgroundColor: Colors.panel,
-    borderWidth: 1,
-    borderColor: Colors.hairline,
-  },
-  hiddenFetchHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
     marginBottom: 8,
-  },
-  hiddenFetchLabel: {
-    fontSize: 10,
-    fontWeight: "800",
-    color: Colors.inkGhost,
-    letterSpacing: 0.8,
-  },
-  hiddenFetchConnectedText: {
-    fontSize: 11,
-    fontWeight: "600",
-    color: SPOTIFY_GREEN,
+    padding: 10,
+    borderRadius: 10,
+    backgroundColor: "rgba(255, 255, 255, 0.04)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Colors.hairline,
   },
   hiddenFetchActions: {
     flexDirection: "row",
@@ -1477,9 +1568,9 @@ const styles = StyleSheet.create({
     gap: 7,
     paddingVertical: 9,
     paddingHorizontal: 10,
-    borderRadius: 9,
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
+    borderRadius: 8,
+    backgroundColor: "rgba(255, 255, 255, 0.05)",
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: Colors.hairline,
   },
   hiddenFetchOptionText: {

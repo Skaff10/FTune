@@ -3,7 +3,7 @@ import { View, Text, Image, StyleSheet, TouchableOpacity, ActivityIndicator } fr
 import { Download, Check } from "lucide-react-native";
 import { Colors } from "../theme/colors";
 import type { Track } from "../types";
-import { isTrackDownloaded, downloadTrack } from "../services/downloadManager";
+import { isTrackDownloadedSync, downloadTrack } from "../services/downloadManager";
 import { EqBars, AnimatedHeart } from "./AnimatedComponents";
 
 interface SongRowProps {
@@ -15,7 +15,7 @@ interface SongRowProps {
   onToggleFavorite?: (track: Track) => void;
 }
 
-export const SongRow: React.FC<SongRowProps> = ({
+export const SongRow: React.FC<SongRowProps> = React.memo(({
   track,
   isPlaying = false,
   isCurrent = false,
@@ -23,17 +23,11 @@ export const SongRow: React.FC<SongRowProps> = ({
   onPlay,
   onToggleFavorite,
 }) => {
-  const [downloaded, setDownloaded] = useState(false);
+  const [downloaded, setDownloaded] = useState(() => isTrackDownloadedSync(track.id));
   const [downloading, setDownloading] = useState(false);
 
   useEffect(() => {
-    let mounted = true;
-    isTrackDownloaded(track.id).then((isDl) => {
-      if (mounted) setDownloaded(isDl);
-    });
-    return () => {
-      mounted = false;
-    };
+    setDownloaded(isTrackDownloadedSync(track.id));
   }, [track.id]);
 
   const handleDownloadPress = async () => {
@@ -130,7 +124,7 @@ export const SongRow: React.FC<SongRowProps> = ({
       </View>
     </TouchableOpacity>
   );
-};
+});
 
 const styles = StyleSheet.create({
   container: {

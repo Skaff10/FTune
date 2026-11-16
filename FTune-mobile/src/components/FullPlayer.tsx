@@ -38,7 +38,7 @@ import {
 import { Colors } from "../theme/colors";
 import type { RemotePlayerState, Track } from "../types";
 import { isTrackDownloaded, downloadTrack } from "../services/downloadManager";
-import { EqBars, AnimatedHeart, SpringTouchable } from "./AnimatedComponents";
+import { AnimatedHeart } from "./AnimatedComponents";
 
 const { width, height } = Dimensions.get("window");
 const COVER_SIZE = Math.min(width - 56, 360);
@@ -173,7 +173,7 @@ export const FullPlayer: React.FC<FullPlayerProps> = ({
   return (
     <Modal
       visible={visible}
-      animationType="slide"
+      animationType="fade"
       presentationStyle="fullScreen"
       onRequestClose={onClose}
     >
@@ -341,11 +341,11 @@ export const FullPlayer: React.FC<FullPlayerProps> = ({
             <SkipBack size={32} color="#ffffff" fill="#ffffff" />
           </TouchableOpacity>
 
-          {/* Large White Play / Pause Circle with Spring Physics */}
-          <SpringTouchable
+          {/* Large White Play / Pause Circle */}
+          <TouchableOpacity
             style={styles.playCircle}
             onPress={onTogglePlay}
-            activeScale={0.92}
+            activeOpacity={0.8}
           >
             {playerState.playing ? (
               <Pause size={30} color="#000000" fill="#000000" />
@@ -357,7 +357,7 @@ export const FullPlayer: React.FC<FullPlayerProps> = ({
                 style={{ marginLeft: 3 }}
               />
             )}
-          </SpringTouchable>
+          </TouchableOpacity>
 
           {/* Next Track Button */}
           <TouchableOpacity
@@ -523,16 +523,11 @@ const styles = StyleSheet.create({
   artworkWrapper: {
     width: COVER_SIZE,
     height: COVER_SIZE,
-    borderRadius: 14,
+    borderRadius: 12,
     overflow: "hidden",
     backgroundColor: Colors.surfaceCard,
-    borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.12)",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 16 },
-    shadowOpacity: 0.7,
-    shadowRadius: 24,
-    elevation: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255, 255, 255, 0.14)",
   },
   artwork: {
     width: "100%",
@@ -629,17 +624,12 @@ const styles = StyleSheet.create({
     padding: 10,
   },
   playCircle: {
-    width: 66,
-    height: 66,
-    borderRadius: 33,
+    width: 64,
+    height: 64,
+    borderRadius: 32,
     backgroundColor: "#ffffff",
     alignItems: "center",
     justifyContent: "center",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.4,
-    shadowRadius: 10,
-    elevation: 8,
   },
   volumeRow: {
     flexDirection: "row",

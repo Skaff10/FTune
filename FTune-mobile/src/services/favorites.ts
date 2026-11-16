@@ -80,3 +80,15 @@ export async function getRecentTracks(): Promise<Track[]> {
   }
 }
 
+export async function setOfflineFavorites(tracks: Track[]): Promise<void> {
+  try {
+    await AsyncStorage.setItem(FAVORITES_KEY, JSON.stringify(tracks));
+  } catch {}
+}
+
+export async function setRecentTracks(tracks: Track[]): Promise<void> {
+  try {
+    await AsyncStorage.setItem(RECENT_KEY, JSON.stringify(tracks.slice(0, 30)));
+  } catch {}
+}
+
