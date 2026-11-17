@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useRef } from "react";
 import {
   View,
   Text,
@@ -10,9 +10,15 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from "react-native";
-import { Wifi, X, CheckCircle, AlertCircle, RefreshCw, Laptop } from "lucide-react-native";
+import { X, CheckCircle, AlertCircle, RefreshCw, Laptop } from "lucide-react-native";
 import { Colors } from "../theme/colors";
-import { pingServer, setServerAddress, autoDiscover, getServerUrl } from "../services/api";
+import {
+  pingServer,
+  setServerAddress,
+  autoDiscover,
+  cancelAutoDiscover,
+  getServerUrl,
+} from "../services/api";
 
 interface ConnectModalProps {
   visible: boolean;
@@ -25,67 +31,107 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({ visible, onClose, on
     getServerUrl().replace(/^https?:\/\//, "").split(":")[0] || ""
   );
   const [portInput, setPortInput] = useState("8765");
-  const [loading, setLoading] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const [scanning, setScanning] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [isSuccess, setIsSuccess] = useState<boolean | null>(null);
+  const scanAbortRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
 
   React.useEffect(() => {
-    if (visible) {
-      const cur = getServerUrl().replace(/^https?:\/\//, "").split(":")[0];
-      if (cur) setIpInput(cur);
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      scanAbortRef.current?.abort();
+    };
+  }, []);
+
+  const stopScan = () => {
+    if (scanAbortRef.current) {
+      scanAbortRef.current.abort();
+      scanAbortRef.current = null;
     }
-  }, [visible]);
-
-  const handleTestConnect = async () => {
-    if (!ipInput.trim()) return;
-    setLoading(true);
-    setStatusMessage("Connecting to PC...");
-    setIsSuccess(null);
-
-    const target = `http://${ipInput.trim()}:${portInput.trim() || "8765"}`;
-    const info = await pingServer(target);
-    setLoading(false);
-
-    if (info) {
-      setIsSuccess(true);
-      setStatusMessage(`Connected to ${info.hostname || "FTune PC"}!`);
-      await setServerAddress(target);
-      setTimeout(() => {
-        onConnected(info.hostname);
-        onClose();
-      }, 1000);
-    } else {
-      setIsSuccess(false);
-      setStatusMessage("Could not connect. Make sure FTune is running on PC and both devices are on the same Wi-Fi.");
-    }
+    cancelAutoDiscover();
+    setScanning(false);
   };
 
-  const handleAutoScan = async () => {
-    setLoading(true);
+  const runAutoScan = async () => {
+    stopScan();
+    const controller = new AbortController();
+    scanAbortRef.current = controller;
+    setScanning(true);
     setStatusMessage("Scanning local Wi-Fi for FTune PC...");
     setIsSuccess(null);
 
-    const found = await autoDiscover();
-    setLoading(false);
+    const found = await autoDiscover({ signal: controller.signal });
+    if (!mountedRef.current || controller.signal.aborted) return;
+
+    setScanning(false);
+    if (scanAbortRef.current === controller) {
+      scanAbortRef.current = null;
+    }
 
     if (found) {
       const cleanIp = found.replace(/^https?:\/\//, "").split(":")[0];
       setIpInput(cleanIp);
       setIsSuccess(true);
       setStatusMessage("Found FTune PC!");
-      const info = await pingServer(found);
-      setTimeout(() => {
-        onConnected(info?.hostname || "FTune PC");
-        onClose();
-      }, 1000);
+      const info = await pingServer(found, 800);
+      if (!mountedRef.current || controller.signal.aborted) return;
+      onConnected(info?.hostname || "FTune PC");
+      onClose();
     } else {
       setIsSuccess(false);
-      setStatusMessage("Auto-scan didn't find FTune. Please enter your PC's IP address manually.");
+      setStatusMessage("FTune PC not found automatically. Enter your PC's IP address above.");
     }
   };
 
+  React.useEffect(() => {
+    if (visible) {
+      const cur = getServerUrl().replace(/^https?:\/\//, "").split(":")[0];
+      if (cur) setIpInput(cur);
+      setConnecting(false);
+      setStatusMessage(null);
+      setIsSuccess(null);
+      void runAutoScan();
+    } else {
+      stopScan();
+    }
+  }, [visible]);
+
+  const handleTestConnect = async () => {
+    if (!ipInput.trim() || connecting) return;
+    stopScan();
+    setConnecting(true);
+    setStatusMessage("Connecting to PC...");
+    setIsSuccess(null);
+
+    const target = `http://${ipInput.trim()}:${portInput.trim() || "8765"}`;
+    const info = await pingServer(target, 1200);
+    if (!mountedRef.current) return;
+    setConnecting(false);
+
+    if (info) {
+      setIsSuccess(true);
+      setStatusMessage(`Connected to ${info.hostname || "FTune PC"}!`);
+      await setServerAddress(target);
+      onConnected(info.hostname);
+      onClose();
+    } else {
+      setIsSuccess(false);
+      setStatusMessage(
+        "Could not connect. Make sure FTune is running on PC and both devices are on the same Wi-Fi."
+      );
+    }
+  };
+
+  const handleClose = () => {
+    stopScan();
+    onClose();
+  };
+
   return (
-    <Modal visible={visible} animationType="fade" transparent={true}>
+    <Modal visible={visible} animationType="fade" transparent={true} onRequestClose={handleClose}>
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         style={styles.overlay}
@@ -96,13 +142,13 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({ visible, onClose, on
               <Laptop size={20} color={Colors.accent} />
               <Text style={styles.title}>Connect to FTune PC</Text>
             </View>
-            <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
+            <TouchableOpacity onPress={handleClose} style={styles.closeBtn}>
               <X size={20} color={Colors.textSecondary} />
             </TouchableOpacity>
           </View>
 
           <Text style={styles.description}>
-            Enter your PC's local IP address (shown in FTune on your computer) or click Auto-Scan.
+            Enter your PC's local IP address (shown in FTune on your computer) or scan Wi-Fi.
           </Text>
 
           <View style={styles.inputGroup}>
@@ -129,13 +175,33 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({ visible, onClose, on
           </View>
 
           {statusMessage && (
-            <View style={[styles.statusBox, isSuccess ? styles.statusSuccess : styles.statusError]}>
-              {isSuccess ? (
+            <View
+              style={[
+                styles.statusBox,
+                isSuccess === true
+                  ? styles.statusSuccess
+                  : isSuccess === false
+                  ? styles.statusError
+                  : styles.statusPending,
+              ]}
+            >
+              {isSuccess === true ? (
                 <CheckCircle size={16} color={Colors.success} />
-              ) : (
+              ) : isSuccess === false ? (
                 <AlertCircle size={16} color={Colors.danger} />
+              ) : (
+                <ActivityIndicator size="small" color={Colors.accent} />
               )}
-              <Text style={[styles.statusText, isSuccess ? styles.textSuccess : styles.textError]}>
+              <Text
+                style={[
+                  styles.statusText,
+                  isSuccess === true
+                    ? styles.textSuccess
+                    : isSuccess === false
+                    ? styles.textError
+                    : styles.textPending,
+                ]}
+              >
                 {statusMessage}
               </Text>
             </View>
@@ -143,11 +209,14 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({ visible, onClose, on
 
           <View style={styles.buttonCol}>
             <TouchableOpacity
-              style={[styles.primaryButton, loading && styles.disabledButton]}
+              style={[
+                styles.primaryButton,
+                (connecting || !ipInput.trim()) && styles.disabledButton,
+              ]}
               onPress={handleTestConnect}
-              disabled={loading}
+              disabled={connecting || !ipInput.trim()}
             >
-              {loading ? (
+              {connecting ? (
                 <ActivityIndicator size="small" color="#000" />
               ) : (
                 <Text style={styles.primaryButtonText}>Connect to PC</Text>
@@ -155,12 +224,18 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({ visible, onClose, on
             </TouchableOpacity>
 
             <TouchableOpacity
-              style={[styles.secondaryButton, loading && styles.disabledButton]}
-              onPress={handleAutoScan}
-              disabled={loading}
+              style={[styles.secondaryButton, (connecting || scanning) && styles.disabledButton]}
+              onPress={() => void runAutoScan()}
+              disabled={connecting || scanning}
             >
-              <RefreshCw size={16} color={Colors.textPrimary} />
-              <Text style={styles.secondaryButtonText}>Auto-Scan Local Wi-Fi</Text>
+              {scanning ? (
+                <ActivityIndicator size="small" color={Colors.textPrimary} />
+              ) : (
+                <RefreshCw size={16} color={Colors.textPrimary} />
+              )}
+              <Text style={styles.secondaryButtonText}>
+                {scanning ? "Scanning Wi-Fi..." : "Auto-Scan Local Wi-Fi"}
+              </Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -261,6 +336,9 @@ const styles = StyleSheet.create({
   statusError: {
     backgroundColor: "rgba(239, 68, 68, 0.1)",
   },
+  statusPending: {
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
+  },
   statusText: {
     fontSize: 12,
     flex: 1,
@@ -270,6 +348,9 @@ const styles = StyleSheet.create({
   },
   textError: {
     color: Colors.danger,
+  },
+  textPending: {
+    color: Colors.textSecondary,
   },
   buttonCol: {
     gap: 10,

@@ -25,11 +25,14 @@ const STORAGE_KEYS = {
 const SUPABASE_URL = "https://jbctywgcnhryyqgkssme.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_1zlCAPUeNhU9osfQrbnb6A_PvTFVhOq";
 
+const USERNAME_RE = /^[a-z0-9_@]{3,20}$/;
+const SIGNIN_USERNAME_RE = /^[a-z0-9_@]{3,24}$/;
+const REAL_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 const syntheticEmail = (username: string): string =>
   `${username.trim().toLowerCase().replace(/@/g, "--")}@users.ftune.local`;
 
-const cleanUsername = (username: string): string =>
-  username.trim().toLowerCase().replace(/[^a-z0-9_@]/g, "");
+const cleanUsername = (username: string): string => username.trim().toLowerCase();
 
 export interface SyncedLibraryPayload {
   version: number;
@@ -110,8 +113,8 @@ class CloudAccountService {
 
   private validateCredentials(username: string, password: string): string | null {
     const clean = cleanUsername(username);
-    if (clean.length < 3 || clean.length > 24) {
-      return "Username must be 3–24 characters (letters, numbers, _).";
+    if (!USERNAME_RE.test(clean)) {
+      return "Username must be 3–20 characters (letters, numbers, _ and @ only).";
     }
     if (!password || password.length < 6) {
       return "Password must be at least 6 characters.";
@@ -162,9 +165,19 @@ class CloudAccountService {
       });
 
       const data = await res.json().catch(() => null);
-      if (!res.ok || !data?.access_token || !data?.user?.id) {
+      if (!res.ok) {
+        const msg = String(data?.msg || data?.error_description || data?.message || "");
+        if (data?.error_code === "user_already_exists" || /already registered/i.test(msg)) {
+          throw new Error("That username is already taken.");
+        }
+        throw new Error(msg || `Could not create account (${res.status}).`);
+      }
+
+      if (!data?.access_token || !data?.user?.id) {
         throw new Error(
-          data?.msg || data?.error_description || "Could not create account."
+          data?.msg ||
+            data?.error_description ||
+            "Could not create account. Email confirmation may be required."
         );
       }
 
@@ -199,8 +212,13 @@ class CloudAccountService {
       await AsyncStorage.setItem(STORAGE_KEYS.ACCOUNT, JSON.stringify(account));
       await AsyncStorage.setItem(STORAGE_KEYS.LAST_USER_ID, account.id);
 
-      // Push current local playlists & liked songs up to the new account
-      await this.syncNow("push-priority");
+      // Push current local playlists & liked songs up without failing account creation on network hiccup
+      try {
+        await this.syncNow("push-priority");
+      } catch (syncErr: any) {
+        this.error = syncErr?.message || "Signed up, cloud sync will retry.";
+        this.scheduleSync(5000);
+      }
 
       this.syncing = false;
       this.notify();
@@ -214,12 +232,18 @@ class CloudAccountService {
   }
 
   /**
-   * Sign in to an existing FTune Cloud Account on any phone
+   * Sign in to an existing FTune Cloud Account (username or email + password)
    */
   public async signIn(username: string, password: string): Promise<CloudUserAccount> {
-    const clean = cleanUsername(username);
+    const trimmed = username.trim();
+    const clean = trimmed.toLowerCase();
     if (!clean || !password) {
       throw new Error("Enter your username and password.");
+    }
+
+    const isRealEmail = REAL_EMAIL_RE.test(clean);
+    if (!isRealEmail && !SIGNIN_USERNAME_RE.test(clean)) {
+      throw new Error("Enter a valid username (letters, numbers, _ or @) or email.");
     }
 
     this.error = null;
@@ -227,6 +251,7 @@ class CloudAccountService {
     this.notify();
 
     try {
+      const loginEmail = isRealEmail ? clean : syntheticEmail(clean);
       const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
         method: "POST",
         headers: {
@@ -234,20 +259,47 @@ class CloudAccountService {
           apikey: SUPABASE_ANON_KEY,
         },
         body: JSON.stringify({
-          email: syntheticEmail(clean),
+          email: loginEmail,
           password,
         }),
       });
 
       const data = await res.json().catch(() => null);
       if (!res.ok || !data?.access_token || !data?.user?.id) {
-        throw new Error("Wrong username or password.");
+        if (res.status === 400 || res.status === 401 || data?.error_code === "invalid_credentials") {
+          throw new Error("Wrong username or password.");
+        }
+        throw new Error(
+          data?.msg || data?.error_description || `Sign in failed (${res.status}).`
+        );
       }
+
+      let resolvedUsername = isRealEmail ? clean.split("@")[0] : clean;
+      let resolvedDisplayName = isRealEmail ? resolvedUsername : trimmed;
+      try {
+        const profRes = await fetch(
+          `${SUPABASE_URL}/rest/v1/profiles?id=eq.${encodeURIComponent(data.user.id)}&select=username`,
+          {
+            headers: {
+              Authorization: `Bearer ${data.access_token}`,
+              apikey: SUPABASE_ANON_KEY,
+              Accept: "application/json",
+            },
+          }
+        );
+        if (profRes.ok) {
+          const rows = await profRes.json();
+          if (Array.isArray(rows) && rows[0]?.username) {
+            resolvedUsername = String(rows[0].username);
+            resolvedDisplayName = resolvedUsername;
+          }
+        }
+      } catch {}
 
       const account: CloudUserAccount = {
         id: data.user.id,
-        username: clean,
-        displayName: username.trim(),
+        username: resolvedUsername,
+        displayName: resolvedDisplayName,
         accessToken: data.access_token,
         refreshToken: data.refresh_token,
         expiresAt: Date.now() + (Number(data.expires_in) || 3600) * 1000,
@@ -263,9 +315,14 @@ class CloudAccountService {
 
       this.user = account;
       await AsyncStorage.setItem(STORAGE_KEYS.ACCOUNT, JSON.stringify(account));
-
-      await this.syncNow(isDifferentAccount ? "pull-first" : "merge");
       await AsyncStorage.setItem(STORAGE_KEYS.LAST_USER_ID, account.id);
+
+      try {
+        await this.syncNow(isDifferentAccount ? "pull-first" : "merge");
+      } catch (syncErr: any) {
+        this.error = syncErr?.message || "Signed in, cloud sync will retry.";
+        this.scheduleSync(5000);
+      }
 
       this.syncing = false;
       this.notify();
@@ -304,7 +361,14 @@ class CloudAccountService {
               expiresAt: Date.now() + (Number(data.expires_in) || 3600) * 1000,
             };
             await AsyncStorage.setItem(STORAGE_KEYS.ACCOUNT, JSON.stringify(this.user));
+            return this.user;
           }
+        } else if (res.status === 400 || res.status === 401) {
+          this.user = null;
+          this.error = "Session expired. Please sign in again.";
+          await AsyncStorage.removeItem(STORAGE_KEYS.ACCOUNT);
+          this.notify();
+          return null;
         }
       } catch (e) {
         console.warn("[cloud-account] token refresh error:", e);

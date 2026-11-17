@@ -10,6 +10,7 @@ import {
   Alert,
   FlatList,
   Image,
+  Platform,
 } from "react-native";
 import { WebView } from "react-native-webview";
 import {
@@ -24,6 +25,8 @@ import {
   RefreshCw,
   LogOut,
   Download,
+  ArrowLeft,
+  AlertCircle,
 } from "lucide-react-native";
 import { Colors } from "../theme/colors";
 import { SpotifyIcon, SPOTIFY_GREEN } from "./SpotifyIcon";
@@ -42,14 +45,39 @@ interface SpotifyLoginModalProps {
   }) => void;
 }
 
-const DESKTOP_CHROME_UA =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+const SPOTIFY_LOGIN_URL =
+  "https://accounts.spotify.com/en/login?continue=https%3A%2F%2Fopen.spotify.com%2F";
+
+const MOBILE_BROWSER_UA =
+  Platform.OS === "ios"
+    ? "Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1"
+    : "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36";
 
 function isSpotifyPostLoginUrl(url: string): boolean {
   const lower = url.toLowerCase();
   return (
     /^https:\/\/open\.spotify\.com(?:[/?#]|$)/.test(lower) ||
     /^https:\/\/accounts\.spotify\.com(?:\/[^?#]*)?\/status(?:[/?#]|$)/.test(lower)
+  );
+}
+
+function isGoogleOAuthUrl(url: string): boolean {
+  const lower = url.toLowerCase();
+  return (
+    /^https:\/\/accounts\.google\.com(?:[/?#]|$)/.test(lower) ||
+    lower.includes("disallowed_useragent")
+  );
+}
+
+function isAllowedWebViewScheme(url: string): boolean {
+  const lower = url.toLowerCase();
+  return (
+    lower.startsWith("https://") ||
+    lower.startsWith("http://") ||
+    lower.startsWith("about:") ||
+    lower.startsWith("data:") ||
+    lower.startsWith("blob:") ||
+    lower.startsWith("javascript:")
   );
 }
 
@@ -85,6 +113,15 @@ const BEFORE_LOAD_SCRIPT = `
           if (headers) {
             var auth = headers['Authorization'] || headers['authorization'] ||
               (headers.get && (headers.get('Authorization') || headers.get('authorization')));
+            if (!auth && Array.isArray(headers)) {
+              for (var hi = 0; hi < headers.length; hi++) {
+                var hPair = headers[hi];
+                if (hPair && String(hPair[0]).toLowerCase() === 'authorization') {
+                  auth = hPair[1];
+                  break;
+                }
+              }
+            }
             if (auth && typeof auth === 'string' && auth.indexOf('Bearer ') === 0 && url.indexOf('spotify.com') !== -1) {
               var bearer = auth.slice(7).trim();
               if (bearer.length > 30 && window.__ftuneIsSignedIn) {
@@ -172,7 +209,7 @@ const INJECTED_AUTH_SCRIPT = `
     function computeTotp(secret, epochMs) {
       var xored = '';
       for (var i = 0; i < secret.length; i++) {
-        xored += String.fromCharCode(secret.charCodeAt(i) ^ ((i % 33) + 9));
+        xored += String(secret.charCodeAt(i) ^ ((i % 33) + 9));
       }
       var keyBytes = new TextEncoder().encode(xored);
       var counter = Math.floor(epochMs / 30000);
@@ -192,6 +229,7 @@ const INJECTED_AUTH_SCRIPT = `
     var currentVer = 61;
     var checking = false;
     var anonCount = 0;
+    var serverOffsetMs = null;
 
     function unescapeJs(s) {
       return s.replace(/\\\\(\\\\|["']|x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4})/g, function(_, esc) {
@@ -203,58 +241,105 @@ const INJECTED_AUTH_SCRIPT = `
     function sendSuccess(token, name, expiresAt) {
       if (!token || window.__ftuneReportedToken === token) return;
       window.__ftuneReportedToken = token;
-      window.ReactNativeWebView.postMessage(JSON.stringify({
-        type: 'spotify-success',
-        token: token,
-        name: name || '',
-        expiresAt: typeof expiresAt === 'number' ? expiresAt : undefined
-      }));
+      if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+        window.ReactNativeWebView.postMessage(JSON.stringify({
+          type: 'spotify-success',
+          token: token,
+          name: name || '',
+          expiresAt: typeof expiresAt === 'number' ? expiresAt : undefined
+        }));
+      }
+    }
+
+    function refreshSecretFromPage() {
+      var scriptUrl = '';
+      var scripts = document.querySelectorAll('script[src]');
+      for (var i = 0; i < scripts.length; i++) {
+        var src = scripts[i].getAttribute('src') || '';
+        if (/web-player\\.[0-9a-f]+\\.js/.test(src)) {
+          scriptUrl = src;
+          break;
+        }
+      }
+      if (!scriptUrl) {
+        var html = document.documentElement ? document.documentElement.innerHTML : '';
+        var m = /https:\\/\\/open\\.spotifycdn\\.com\\/cdn\\/build\\/web-player\\/web-player\\.[0-9a-f]+\\.js/.exec(html);
+        if (m && m[0]) scriptUrl = m[0];
+      }
+      if (!scriptUrl) return Promise.resolve();
+      return fetch(scriptUrl).then(function(sr) { return sr.text(); }).then(function(script) {
+        var re = /\\{secret:(['"])((?:\\\\.|(?!\\1).)*)\\1,version:(\\d+)\\}/g;
+        var match, bestVer = -1, bestSec = '';
+        while ((match = re.exec(script)) !== null) {
+          var v = parseInt(match[3], 10);
+          if (v > bestVer) { bestVer = v; bestSec = match[2]; }
+        }
+        if (bestVer > 0 && bestSec) {
+          currentVer = bestVer;
+          currentSecret = unescapeJs(bestSec);
+        }
+      }).catch(function() {});
+    }
+
+    function fetchServerTimeOffset() {
+      if (serverOffsetMs !== null) return Promise.resolve(serverOffsetMs);
+      return fetch('https://open.spotify.com/api/server-time', { credentials: 'include' })
+        .then(function(r) { return r.json(); })
+        .then(function(st) {
+          var sec = st && Number(st.serverTime);
+          if (sec && !isNaN(sec)) {
+            serverOffsetMs = sec * 1000 - Date.now();
+            return serverOffsetMs;
+          }
+          return 0;
+        })
+        .catch(function() { return 0; });
     }
 
     function tryMintToken() {
+      if (window.top !== window) return;
       if (checking || window.__ftuneReportedToken) return;
       var host = window.location.hostname || '';
       var path = window.location.pathname || '';
 
       // If accounts.spotify.com landed on /status after login, jump straight to open.spotify.com
       if (host.indexOf('accounts.spotify.com') !== -1 && path.indexOf('/status') !== -1) {
-        window.location.replace('https://open.spotify.com/');
+        if (!window.__ftuneStatusRedirecting) {
+          window.__ftuneStatusRedirecting = true;
+          setTimeout(function() {
+            window.location.replace('https://open.spotify.com/');
+          }, 250);
+        }
         return;
       }
 
       if (host.indexOf('open.spotify.com') === -1) return;
 
       checking = true;
-      var code = computeTotp(currentSecret, Date.now());
-      var url = 'https://open.spotify.com/api/token?reason=init&productType=web-player&totp=' + code + '&totpServer=' + code + '&totpVer=' + currentVer;
-
-      fetch(url, { credentials: 'include' })
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-          if (data && data.accessToken && data.isAnonymous === false) {
+      fetchServerTimeOffset()
+        .then(function(offsetMs) {
+          var nowMs = Date.now();
+          var srvMs = nowMs + (offsetMs || 0);
+          var code = computeTotp(currentSecret, nowMs);
+          var srvCode = computeTotp(currentSecret, srvMs);
+          var url = 'https://open.spotify.com/api/token?reason=init&productType=web-player&totp=' + code + '&totpServer=' + srvCode + '&totpVer=' + currentVer;
+          return fetch(url, { credentials: 'include' });
+        })
+        .then(function(r) {
+          return r.json().catch(function() { return {}; }).then(function(data) {
+            return { ok: r.ok, status: r.status, data: data };
+          });
+        })
+        .then(function(res) {
+          var data = res.data || {};
+          if (data.accessToken && data.isAnonymous === false) {
             anonCount = 0;
             sendSuccess(data.accessToken, '', data.accessTokenExpirationTimestampMs);
-          } else if (data && data.totpVerExpired) {
-            // Scrape updated secret from web-player bundle if Spotify rotated version
-            var html = document.documentElement ? document.documentElement.innerHTML : '';
-            var m = /https:\\/\\/open\\.spotifycdn\\.com\\/cdn\\/build\\/web-player\\/web-player\\.[0-9a-f]+\\.js/.exec(html);
-            if (m && m[0]) {
-              return fetch(m[0]).then(function(sr) { return sr.text(); }).then(function(script) {
-                var re = /\\{secret:(['"])((?:\\\\.|(?!\\1).)*)\\1,version:(\\d+)\\}/g;
-                var match, bestVer = -1, bestSec = '';
-                while ((match = re.exec(script)) !== null) {
-                  var v = parseInt(match[3], 10);
-                  if (v > bestVer) { bestVer = v; bestSec = match[2]; }
-                }
-                if (bestVer > 0 && bestSec) {
-                  currentVer = bestVer;
-                  currentSecret = unescapeJs(bestSec);
-                }
-              });
-            }
-          } else if (data && data.isAnonymous) {
+          } else if (!res.ok || data.totpVerExpired) {
+            return refreshSecretFromPage();
+          } else if (data.isAnonymous) {
             anonCount++;
-            if (anonCount === 4 && window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+            if (anonCount === 2 && window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
               window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'spotify-anonymous' }));
             }
           }
@@ -265,8 +350,15 @@ const INJECTED_AUTH_SCRIPT = `
         });
     }
 
-    tryMintToken();
-    setInterval(tryMintToken, 1200);
+    if (window.top === window) {
+      if (!window.__ftuneAuthIntervalStarted) {
+        window.__ftuneAuthIntervalStarted = true;
+        tryMintToken();
+        setInterval(tryMintToken, 1000);
+      } else {
+        tryMintToken();
+      }
+    }
   })();
   true;
 `;
@@ -294,6 +386,9 @@ export const SpotifyLoginModal: React.FC<SpotifyLoginModalProps> = ({
   const [borrowing, setBorrowing] = useState(false);
   const [borrowProgress, setBorrowProgress] = useState("");
   const [showSignInWebView, setShowSignInWebView] = useState(!spotifyService.getStatus().connected);
+  const [canGoBack, setCanGoBack] = useState(false);
+  const [currentWebUrl, setCurrentWebUrl] = useState(SPOTIFY_LOGIN_URL);
+  const [webViewKey, setWebViewKey] = useState(0);
 
   // Import Link state
   const [publicUrl, setPublicUrl] = useState("");
@@ -340,6 +435,8 @@ export const SpotifyLoginModal: React.FC<SpotifyLoginModalProps> = ({
     setShowSignInWebView(!st.connected);
     setLoadingWeb(!st.connected);
     setExtractingSession(false);
+    setCanGoBack(false);
+    setCurrentWebUrl(SPOTIFY_LOGIN_URL);
     clearExtractTimer();
     handledTokenRef.current = null;
 
@@ -404,6 +501,9 @@ export const SpotifyLoginModal: React.FC<SpotifyLoginModalProps> = ({
           handledTokenRef.current = null;
           setExtractingSession(false);
           setShowSignInWebView(true);
+          webViewRef.current?.injectJavaScript(
+            "window.__ftuneReportedToken = null; window.__ftuneIsSignedIn = false; true;"
+          );
           Alert.alert(
             "Spotify Sign-In",
             status.problem || "Could not verify Spotify session. Please try again."
@@ -434,11 +534,15 @@ export const SpotifyLoginModal: React.FC<SpotifyLoginModalProps> = ({
 
   const handleNavigationChange = (navState: any) => {
     const url = navState?.url || "";
-    // The instant Spotify redirects from accounts.spotify.com to open.spotify.com (or /status),
-    // hide the raw webpage so it never acts like a normal browser opening spotify.com!
+    if (url) {
+      setCurrentWebUrl(url);
+    }
+    if (typeof navState?.canGoBack === "boolean") {
+      setCanGoBack(navState.canGoBack);
+    }
     if (isSpotifyPostLoginUrl(url)) {
       startExtractSession();
-    } else if (/^https:\/\/accounts\.spotify\.com(?:\/[^?#]*)?\/login(?:[/?#]|$)/i.test(url)) {
+    } else if (url) {
       clearExtractTimer();
       setExtractingSession(false);
     }
@@ -523,6 +627,9 @@ export const SpotifyLoginModal: React.FC<SpotifyLoginModalProps> = ({
     setSelectedIds(new Set());
     setLoadingWeb(true);
     setExtractingSession(false);
+    setCanGoBack(false);
+    setCurrentWebUrl(SPOTIFY_LOGIN_URL);
+    setWebViewKey((k) => k + 1);
     setShowSignInWebView(true);
     handledTokenRef.current = null;
   };
@@ -640,58 +747,117 @@ export const SpotifyLoginModal: React.FC<SpotifyLoginModalProps> = ({
           <View style={styles.webContainer}>
             {showSignInWebView ? (
               <>
-                {(loadingWeb || extractingSession) && (
-                  <View style={styles.loadingOverlay}>
-                    <ActivityIndicator size="large" color={SPOTIFY_GREEN} />
-                    <Text style={styles.loadingTitle}>
-                      {extractingSession
-                        ? "Authenticated! Loading your playlists & Liked Songs..."
-                        : "Loading Spotify Sign In..."}
+                <View style={styles.webToolbar}>
+                  <TouchableOpacity
+                    style={[styles.webNavBtn, !canGoBack && { opacity: 0.35 }]}
+                    disabled={!canGoBack}
+                    onPress={() => webViewRef.current?.goBack()}
+                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                  >
+                    <ArrowLeft size={15} color={Colors.inkHi} />
+                  </TouchableOpacity>
+
+                  <Text style={styles.webHintText} numberOfLines={1}>
+                    Sign in with Email + code or Password
+                  </Text>
+
+                  <TouchableOpacity
+                    style={styles.webNavBtn}
+                    onPress={() => {
+                      setLoadingWeb(true);
+                      setCanGoBack(false);
+                      setCurrentWebUrl(SPOTIFY_LOGIN_URL);
+                      setWebViewKey((k) => k + 1);
+                    }}
+                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                  >
+                    <RefreshCw size={14} color={Colors.inkHi} />
+                  </TouchableOpacity>
+                </View>
+
+                {isGoogleOAuthUrl(currentWebUrl) && (
+                  <View style={styles.googleBlockedBanner}>
+                    <AlertCircle size={16} color="#FBBF24" />
+                    <Text style={styles.googleBlockedText}>
+                      Google blocks sign-in inside app browsers. Go back and enter your Gmail directly in Spotify for a 6-digit login code.
                     </Text>
-                    {extractingSession && (
-                      <Text style={styles.loadingSub}>
-                        Preparing your playlists so you can choose which ones to borrow
-                      </Text>
-                    )}
+                    <TouchableOpacity
+                      style={styles.googleBackBtn}
+                      onPress={() => {
+                        setCurrentWebUrl(SPOTIFY_LOGIN_URL);
+                        setWebViewKey((k) => k + 1);
+                      }}
+                    >
+                      <Text style={styles.googleBackBtnText}>Back</Text>
+                    </TouchableOpacity>
                   </View>
                 )}
 
-                <CustomWebView
-                  ref={webViewRef}
-                  source={{
-                    uri: "https://accounts.spotify.com/en/login?continue=https%3A%2F%2Fopen.spotify.com%2F",
-                  }}
-                  injectedJavaScriptBeforeContentLoaded={BEFORE_LOAD_SCRIPT}
-                  injectedJavaScript={INJECTED_AUTH_SCRIPT}
-                  onMessage={handleWebViewMessage}
-                  onNavigationStateChange={handleNavigationChange}
-                  onLoadStart={(e: any) => handleNavigationChange(e?.nativeEvent)}
-                  onLoadEnd={() => setLoadingWeb(false)}
-                  onError={() => {
-                    clearExtractTimer();
-                    setLoadingWeb(false);
-                    setExtractingSession(false);
-                  }}
-                  onHttpError={() => setLoadingWeb(false)}
-                  onShouldStartLoadWithRequest={(req: any) => {
-                    const url = req?.url || "";
-                    // Prevent OS from hijacking spotify:// or intent:// links to external browser/app
-                    if (!url.startsWith("https://") && !url.startsWith("http://") && !url.startsWith("about:")) {
-                      return false;
-                    }
-                    if (isSpotifyPostLoginUrl(url)) {
-                      startExtractSession();
-                    }
-                    return true;
-                  }}
-                  setSupportMultipleWindows={false}
-                  userAgent={DESKTOP_CHROME_UA}
-                  javaScriptEnabled={true}
-                  domStorageEnabled={true}
-                  sharedCookiesEnabled={true}
-                  thirdPartyCookiesEnabled={true}
-                  style={{ flex: 1, backgroundColor: Colors.surface }}
-                />
+                <View style={{ flex: 1, position: "relative" }}>
+                  {(loadingWeb || extractingSession) && (
+                    <View style={styles.loadingOverlay}>
+                      <ActivityIndicator size="large" color={SPOTIFY_GREEN} />
+                      <Text style={styles.loadingTitle}>
+                        {extractingSession
+                          ? "Authenticated! Loading your playlists & Liked Songs..."
+                          : "Loading Spotify Sign In..."}
+                      </Text>
+                      {extractingSession && (
+                        <Text style={styles.loadingSub}>
+                          Preparing your playlists so you can choose which ones to borrow
+                        </Text>
+                      )}
+                    </View>
+                  )}
+
+                  <CustomWebView
+                    key={webViewKey}
+                    ref={webViewRef}
+                    source={{
+                      uri: SPOTIFY_LOGIN_URL,
+                    }}
+                    originWhitelist={["*"]}
+                    mixedContentMode="compatibility"
+                    injectedJavaScriptBeforeContentLoaded={BEFORE_LOAD_SCRIPT}
+                    injectedJavaScript={INJECTED_AUTH_SCRIPT}
+                    onMessage={handleWebViewMessage}
+                    onNavigationStateChange={handleNavigationChange}
+                    onLoadStart={(e: any) => handleNavigationChange(e?.nativeEvent)}
+                    onLoadProgress={(e: any) => {
+                      if ((e?.nativeEvent?.progress ?? 0) >= 0.85) {
+                        setLoadingWeb(false);
+                      }
+                    }}
+                    onLoadEnd={(e: any) => {
+                      setLoadingWeb(false);
+                      const url = e?.nativeEvent?.url || "";
+                      if (isSpotifyPostLoginUrl(url)) {
+                        webViewRef.current?.injectJavaScript(INJECTED_AUTH_SCRIPT);
+                      }
+                    }}
+                    onError={() => {
+                      clearExtractTimer();
+                      setLoadingWeb(false);
+                      setExtractingSession(false);
+                    }}
+                    onHttpError={() => setLoadingWeb(false)}
+                    onShouldStartLoadWithRequest={(req: any) => {
+                      const url = req?.url || "";
+                      // Prevent OS from hijacking spotify:// or intent:// links to external browser/app
+                      if (!isAllowedWebViewScheme(url)) {
+                        return false;
+                      }
+                      return true;
+                    }}
+                    setSupportMultipleWindows={false}
+                    userAgent={MOBILE_BROWSER_UA}
+                    javaScriptEnabled={true}
+                    domStorageEnabled={true}
+                    sharedCookiesEnabled={true}
+                    thirdPartyCookiesEnabled={true}
+                    style={{ flex: 1, backgroundColor: Colors.surface }}
+                  />
+                </View>
               </>
             ) : (
               /* BORROW PLAYLISTS & LIKED MUSIC PICKER */
@@ -1026,6 +1192,58 @@ const styles = StyleSheet.create({
   webContainer: {
     flex: 1,
     position: "relative",
+  },
+  webToolbar: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: Colors.surface,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: Colors.hairline,
+    gap: 8,
+  },
+  webNavBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: Colors.panel,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  webHintText: {
+    flex: 1,
+    fontSize: 11.5,
+    color: Colors.inkDim,
+    textAlign: "center",
+  },
+  googleBlockedBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(251, 191, 36, 0.14)",
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(251, 191, 36, 0.35)",
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    gap: 8,
+  },
+  googleBlockedText: {
+    flex: 1,
+    fontSize: 12,
+    color: "#FDE68A",
+    lineHeight: 16,
+  },
+  googleBackBtn: {
+    backgroundColor: SPOTIFY_GREEN,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+  },
+  googleBackBtnText: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#000000",
   },
   loadingOverlay: {
     position: "absolute",

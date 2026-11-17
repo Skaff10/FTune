@@ -60,8 +60,34 @@ export function getServerUrl(): string {
   return currentServerUrl;
 }
 
-export async function pingServer(url: string, timeoutMs = 1500): Promise<ServerInfo | null> {
-  if (!url || !url.trim()) return null;
+export function reconnectWebSocket(): void {
+  triggerWsReconnect?.();
+}
+
+let activeDiscoverController: AbortController | null = null;
+let activeDiscoverPromise: Promise<string | null> | null = null;
+
+export function cancelAutoDiscover(): void {
+  if (activeDiscoverController) {
+    try {
+      activeDiscoverController.abort();
+    } catch {}
+    activeDiscoverController = null;
+  }
+  activeDiscoverPromise = null;
+}
+
+export async function pingServer(
+  url: string,
+  timeoutMs = 1500,
+  externalSignal?: AbortSignal
+): Promise<ServerInfo | null> {
+  if (!url || !url.trim() || externalSignal?.aborted) return null;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const onExternalAbort = () => controller.abort();
+  externalSignal?.addEventListener("abort", onExternalAbort, { once: true });
+
   try {
     let target = url.trim();
     if (!target.startsWith("http://") && !target.startsWith("https://")) {
@@ -70,11 +96,8 @@ export async function pingServer(url: string, timeoutMs = 1500): Promise<ServerI
     if (!target.includes(":", target.indexOf("//") + 2)) {
       target = `${target}:8765`;
     }
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
     const res = await fetch(`${target}/api/ping`, { signal: controller.signal });
-    clearTimeout(timeout);
     if (res.ok) {
       const data = await res.json();
       if (data?.app === "FTune" || data?.app === "ByTune") {
@@ -82,76 +105,142 @@ export async function pingServer(url: string, timeoutMs = 1500): Promise<ServerI
       }
     }
   } catch {}
-  return null;
-}
-
-async function scanSubnet(subnet: string): Promise<string | null> {
-  const batchSize = 48;
-  for (let i = 1; i < 255; i += batchSize) {
-    const promises: Promise<string | null>[] = [];
-    for (let j = i; j < i + batchSize && j < 255; j++) {
-      const testUrl = `http://${subnet}.${j}:8765`;
-      promises.push(
-        pingServer(testUrl, 750)
-          .then((info) => (info ? testUrl : null))
-          .catch(() => null)
-      );
-    }
-    const results = await Promise.all(promises);
-    const found = results.find((r) => r !== null);
-    if (found) return found;
+  finally {
+    clearTimeout(timeout);
+    externalSignal?.removeEventListener("abort", onExternalAbort);
   }
   return null;
 }
 
-export async function autoDiscover(): Promise<string | null> {
-  if (currentServerUrl) {
-    const current = await pingServer(currentServerUrl, 1000);
-    if (current) {
-      triggerWsReconnect?.();
-      return currentServerUrl;
-    }
+async function scanSubnet(
+  subnet: string,
+  externalSignal?: AbortSignal,
+  skipLastOctet?: number
+): Promise<string | null> {
+  if (externalSignal?.aborted) return null;
+
+  const localController = new AbortController();
+  const onAbort = () => localController.abort();
+  externalSignal?.addEventListener("abort", onAbort, { once: true });
+
+  const candidates: number[] = [];
+  for (let i = 2; i < 255; i++) {
+    if (i !== skipLastOctet) candidates.push(i);
   }
+  if (skipLastOctet !== 1) candidates.push(1);
 
-  const candidateSubnets: string[] = [];
+  let nextIdx = 0;
+  let foundUrl: string | null = null;
+  const concurrency = 64;
 
-  // 1. Detect the phone's exact active Wi-Fi / hotspot subnet first
+  const worker = async () => {
+    while (!foundUrl && !localController.signal.aborted) {
+      const idx = nextIdx++;
+      if (idx >= candidates.length) return;
+      const testUrl = `http://${subnet}.${candidates[idx]}:8765`;
+      const info = await pingServer(testUrl, 450, localController.signal);
+      if (info && !foundUrl) {
+        foundUrl = testUrl;
+        localController.abort();
+        return;
+      }
+    }
+  };
+
   try {
-    const phoneIp = await Network.getIpAddressAsync();
-    if (phoneIp && /^\d+\.\d+\.\d+\.\d+$/.test(phoneIp) && !phoneIp.startsWith("127.")) {
-      const parts = phoneIp.split(".");
-      const phoneSubnet = `${parts[0]}.${parts[1]}.${parts[2]}`;
-      candidateSubnets.push(phoneSubnet);
-    }
-  } catch {}
+    await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  } finally {
+    externalSignal?.removeEventListener("abort", onAbort);
+  }
 
-  // 2. Include subnet of previously saved IP if any
-  if (currentServerUrl) {
+  return foundUrl;
+}
+
+export async function autoDiscover(options?: {
+  signal?: AbortSignal;
+}): Promise<string | null> {
+  if (options?.signal?.aborted) return null;
+
+  if (activeDiscoverPromise) {
+    return activeDiscoverPromise;
+  }
+
+  const controller = new AbortController();
+  activeDiscoverController = controller;
+  const onExternalAbort = () => controller.abort();
+  options?.signal?.addEventListener("abort", onExternalAbort, { once: true });
+
+  const run = (async (): Promise<string | null> => {
+    if (currentServerUrl) {
+      const current = await pingServer(currentServerUrl, 600, controller.signal);
+      if (current) {
+        triggerWsReconnect?.();
+        return currentServerUrl;
+      }
+    }
+
+    if (controller.signal.aborted) return null;
+
+    let phoneSubnet: string | null = null;
+    let phoneLastOctet: number | undefined;
+
+    // 1. Detect the phone's exact active Wi-Fi / hotspot subnet first
     try {
-      const parts = currentServerUrl.replace(/https?:\/\//, "").split(":")[0].split(".");
-      if (parts.length === 4) {
-        const prevSubnet = `${parts[0]}.${parts[1]}.${parts[2]}`;
-        if (!candidateSubnets.includes(prevSubnet)) {
-          candidateSubnets.push(prevSubnet);
-        }
+      const phoneIp = await Network.getIpAddressAsync();
+      if (phoneIp && /^\d+\.\d+\.\d+\.\d+$/.test(phoneIp) && !phoneIp.startsWith("127.")) {
+        const parts = phoneIp.split(".");
+        phoneSubnet = `${parts[0]}.${parts[1]}.${parts[2]}`;
+        phoneLastOctet = Number(parts[3]);
       }
     } catch {}
-  }
 
-  // 3. Fallback common home & hotspot subnets
-  for (const s of ["192.168.1", "192.168.0", "172.20.10", "10.0.0", "192.168.2"]) {
-    if (!candidateSubnets.includes(s)) candidateSubnets.push(s);
-  }
+    if (controller.signal.aborted) return null;
 
-  for (const subnet of candidateSubnets) {
-    const found = await scanSubnet(subnet);
-    if (found) {
-      await setServerAddress(found);
-      return found;
+    if (phoneSubnet) {
+      const found = await scanSubnet(phoneSubnet, controller.signal, phoneLastOctet);
+      if (found) {
+        await setServerAddress(found);
+        return found;
+      }
+      return null;
+    }
+
+    // 2. Fallback only when phone LAN IP couldn't be determined
+    const fallbackSubnets: string[] = [];
+    if (currentServerUrl) {
+      try {
+        const parts = currentServerUrl.replace(/https?:\/\//, "").split(":")[0].split(".");
+        if (parts.length === 4) {
+          fallbackSubnets.push(`${parts[0]}.${parts[1]}.${parts[2]}`);
+        }
+      } catch {}
+    }
+    for (const s of ["192.168.1", "192.168.0", "172.20.10"]) {
+      if (!fallbackSubnets.includes(s)) fallbackSubnets.push(s);
+    }
+
+    for (const subnet of fallbackSubnets) {
+      if (controller.signal.aborted) return null;
+      const found = await scanSubnet(subnet, controller.signal);
+      if (found) {
+        await setServerAddress(found);
+        return found;
+      }
+    }
+
+    return null;
+  })();
+
+  activeDiscoverPromise = run;
+  try {
+    return await run;
+  } finally {
+    options?.signal?.removeEventListener("abort", onExternalAbort);
+    if (activeDiscoverPromise === run) {
+      activeDiscoverPromise = null;
+      activeDiscoverController = null;
     }
   }
-
-  return null;
 }
 
 export async function searchMusic(

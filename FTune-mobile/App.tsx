@@ -30,7 +30,6 @@ import {
   ChevronRight,
   Trash2,
   SlidersHorizontal,
-  Link2,
   User,
 } from "lucide-react-native";
 import { Colors } from "./src/theme/colors";
@@ -54,6 +53,7 @@ import {
   pingServer,
   getServerUrl,
   requestPCSync,
+  reconnectWebSocket,
 } from "./src/services/api";
 import { nativeAudio } from "./src/services/nativeAudio";
 import { resolveAudioStream } from "./src/services/streamResolver";
@@ -74,7 +74,7 @@ import { PlaylistDetailView } from "./src/components/PlaylistDetailView";
 import { SpotifyLoginModal } from "./src/components/SpotifyLoginModal";
 import { AccountModal } from "./src/components/AccountModal";
 import { CoverGlow } from "./src/components/CoverGlow";
-import { SPOTIFY_GREEN, SpotifyIcon } from "./src/components/SpotifyIcon";
+import { SpotifyIcon } from "./src/components/SpotifyIcon";
 import { FTuneLogo } from "./src/components/FTuneLogo";
 import { cloudAccountService } from "./src/services/cloudAccount";
 import {
@@ -539,8 +539,17 @@ function MainContent() {
   // Switch cleanly from Phone -> PC: stop phone audio and run track on PC
   const switchToPC = async () => {
     if (!connectedRef.current) {
-      const found = await autoDiscover();
-      if (!found) {
+      const savedUrl = getServerUrl();
+      if (savedUrl) {
+        const info = await pingServer(savedUrl, 450);
+        if (info) {
+          if (info.hostname) setHostname(info.hostname);
+          connectedRef.current = true;
+          setConnected(true);
+          reconnectWebSocket();
+        }
+      }
+      if (!connectedRef.current) {
         pendingSwitchToPcRef.current = true;
         setConnectModalVisible(true);
         return;
@@ -599,12 +608,22 @@ function MainContent() {
         pcHandoffPendingRef.current = false;
       }
     } else {
-      const freshPc = (await fetchPCPlayerState()) || pcStateRef.current;
-      if (playbackTargetRef.current !== "pc") return;
-      updatePcState(freshPc);
-      if (freshPc.currentTrack && !freshPc.playing) {
-        updatePcState((prev) => ({ ...prev, playing: true }));
-        await sendRemoteAction({ type: "play" });
+      const cachedPc = pcStateRef.current;
+      if (cachedPc.currentTrack) {
+        updatePcState(cachedPc);
+        if (!cachedPc.playing) {
+          updatePcState((prev) => ({ ...prev, playing: true }));
+          void sendRemoteAction({ type: "play" });
+        }
+        requestPCSync();
+      } else {
+        const freshPc = (await fetchPCPlayerState()) || cachedPc;
+        if (playbackTargetRef.current !== "pc") return;
+        updatePcState(freshPc);
+        if (freshPc.currentTrack && !freshPc.playing) {
+          updatePcState((prev) => ({ ...prev, playing: true }));
+          await sendRemoteAction({ type: "play" });
+        }
       }
     }
   };
@@ -1298,19 +1317,7 @@ function MainContent() {
                       }}
                     >
                       <SpotifyIcon size={16} />
-                      <Text style={styles.hiddenFetchOptionText}>Fetch Spotify Playlist</Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      style={styles.hiddenFetchOption}
-                      activeOpacity={0.7}
-                      onPress={() => {
-                        setSpotifyModalInitialTab("link");
-                        setSpotifyModalVisible(true);
-                      }}
-                    >
-                      <Link2 size={15} color={SPOTIFY_GREEN} />
-                      <Text style={styles.hiddenFetchOptionText}>Import Spotify Playlist</Text>
+                      <Text style={styles.hiddenFetchOptionText}>Import Playlist</Text>
                     </TouchableOpacity>
                   </View>
                 </View>

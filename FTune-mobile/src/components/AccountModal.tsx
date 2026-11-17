@@ -106,7 +106,7 @@ export const AccountModal: React.FC<AccountModalProps> = ({
               <View style={styles.profileRow}>
                 <View style={styles.avatar}>
                   <Text style={styles.avatarText}>
-                    {status.user.username[0].toUpperCase()}
+                    {(status.user.username?.[0] || "U").toUpperCase()}
                   </Text>
                 </View>
                 <View style={{ flex: 1 }}>
@@ -174,7 +174,7 @@ export const AccountModal: React.FC<AccountModalProps> = ({
 
               <TextInput
                 style={styles.input}
-                placeholder="Username"
+                placeholder={mode === "signin" ? "Username or email" : "Username"}
                 placeholderTextColor={Colors.inkDim}
                 value={username}
                 onChangeText={setUsername}

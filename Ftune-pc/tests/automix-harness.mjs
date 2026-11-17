@@ -11,6 +11,7 @@
  * the shipped engine, so a regression here is a real regression.
  */
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -185,6 +186,39 @@ class FakeAudio {
 
 const STUB_DIR = "src";
 let cachedBundle = null;
+let bundleTempDir = null;
+let cleanupRegistered = false;
+
+export function getBundlePath() {
+  return cachedBundle;
+}
+
+export function cleanupBundle() {
+  if (cachedBundle) {
+    try {
+      delete require.cache[require.resolve(cachedBundle)];
+    } catch {}
+  }
+  if (bundleTempDir) {
+    try {
+      fs.rmSync(bundleTempDir, { recursive: true, force: true });
+    } catch {}
+    bundleTempDir = null;
+  }
+  cachedBundle = null;
+}
+
+function registerBundleCleanup() {
+  if (cleanupRegistered) return;
+  cleanupRegistered = true;
+  process.once("exit", cleanupBundle);
+  for (const sig of ["SIGINT", "SIGTERM"]) {
+    process.once(sig, () => {
+      cleanupBundle();
+      process.kill(process.pid, sig);
+    });
+  }
+}
 
 async function bundleEngine() {
   if (cachedBundle) return cachedBundle;
@@ -261,14 +295,14 @@ async function bundleEngine() {
       },
     ],
   });
-  fs.mkdirSync(".test-build", { recursive: true });
-  // Per-process: `node --test` runs the test files in parallel processes, and a
-  // shared path lets one process `require` a bundle another is still writing.
-  // A half-written module loads with its re-exports unset, which surfaces as a
-  // store arriving as `undefined` in a test that passed a moment earlier.
-  const outfile = path.resolve(`.test-build/audio-engine-${process.pid}.cjs`);
+  // Per-process temp dir under os.tmpdir() (inside .test-tmp when run via
+  // scripts/with-test-temp.mjs): avoids parallel test processes clobbering
+  // each other and ensures cleanup even if a test fails or crashes.
+  bundleTempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ftune-audio-engine-"));
+  const outfile = path.join(bundleTempDir, `audio-engine-${process.pid}.cjs`);
   fs.writeFileSync(outfile, out.outputFiles[0].text);
   cachedBundle = outfile;
+  registerBundleCleanup();
   return outfile;
 }
 

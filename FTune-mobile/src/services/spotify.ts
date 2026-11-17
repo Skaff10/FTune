@@ -384,13 +384,29 @@ class SpotifyMobileService {
     if (this.refreshPromise) return this.refreshPromise;
 
     this.refreshPromise = (async () => {
+      let serverTimeMs = Date.now();
+      try {
+        const stRes = await fetch(`${WEB_BASE}/api/server-time`, {
+          headers: { Accept: "application/json", "User-Agent": DESKTOP_UA },
+        });
+        if (stRes.ok) {
+          const stData = await stRes.json().catch(() => null);
+          const sec = Number(stData?.serverTime);
+          if (Number.isFinite(sec) && sec > 0) {
+            serverTimeMs = sec * 1000;
+          }
+        }
+      } catch {}
+
       const fetchWithSecret = async (
         reason: "init" | "transport",
         ver: number,
         secret: string
       ) => {
-        const totp = generateSpotifyTotp(secret, Date.now());
-        const url = `${WEB_BASE}/api/token?reason=${reason}&productType=web-player&totp=${totp}&totpServer=${totp}&totpVer=${ver}`;
+        const nowMs = Date.now();
+        const totp = generateSpotifyTotp(secret, nowMs);
+        const totpServer = generateSpotifyTotp(secret, serverTimeMs);
+        const url = `${WEB_BASE}/api/token?reason=${reason}&productType=web-player&totp=${totp}&totpServer=${totpServer}&totpVer=${ver}`;
         const res = await fetch(url, {
           credentials: "include",
           headers: {
@@ -694,12 +710,6 @@ class SpotifyMobileService {
               const d = await r.json();
               likedCount = d?.total || 0;
               anySuccess = true;
-            } else if (r.status === 401) {
-              const refreshed = await this.tryRefreshTokenFromCookies();
-              if (!refreshed) {
-                await this.handleExpiredSession();
-                return this.playlists;
-              }
             }
           } catch {}
         }

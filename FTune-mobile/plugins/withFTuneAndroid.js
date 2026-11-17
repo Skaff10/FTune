@@ -1,4 +1,4 @@
-const { withAndroidManifest, withAppBuildGradle, AndroidConfig } = require("expo/config-plugins");
+const { withAndroidManifest, withAppBuildGradle, withGradleProperties, AndroidConfig } = require("expo/config-plugins");
 const patchExpoAudio = require("./patchExpoAudio");
 
 /**
@@ -7,9 +7,29 @@ const patchExpoAudio = require("./patchExpoAudio");
  * - Ensures required network, notification, & audio wake permissions are declared
  * - Patches expo-audio for timeline duration, play/pause, and next/previous lock-screen controls
  * - Prevents Windows Ninja 260-char MAX_PATH failures via short staging dir & CMAKE_OBJECT_PATH_MAX
+ * - Defaults local prebuild to arm64-v8a while keeping universal ABIs on CI (or FTUNE_UNIVERSAL_APK=1)
  */
 module.exports = function withFTuneAndroid(config) {
   patchExpoAudio();
+
+  const isCI = Boolean(process.env.CI || process.env.GITHUB_ACTIONS);
+  if (!isCI && process.env.FTUNE_UNIVERSAL_APK !== "1") {
+    config = withGradleProperties(config, (cfg) => {
+      const existing = cfg.modResults.find(
+        (item) => item.type === "property" && item.key === "reactNativeArchitectures"
+      );
+      if (existing) {
+        existing.value = "arm64-v8a";
+      } else {
+        cfg.modResults.push({
+          type: "property",
+          key: "reactNativeArchitectures",
+          value: "arm64-v8a",
+        });
+      }
+      return cfg;
+    });
+  }
 
   config = AndroidConfig.Permissions.withPermissions(config, [
     "android.permission.INTERNET",
