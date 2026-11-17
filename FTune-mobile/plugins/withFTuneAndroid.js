@@ -1,17 +1,22 @@
 const { withAndroidManifest, withAppBuildGradle, AndroidConfig } = require("expo/config-plugins");
+const patchExpoAudio = require("./patchExpoAudio");
 
 /**
  * Configures AndroidManifest & build.gradle for FTune native APK:
  * - Enables cleartext HTTP/WS traffic on local Wi-Fi (needed to connect to FTune PC on port 8765)
- * - Ensures required network & audio wake permissions are declared
+ * - Ensures required network, notification, & audio wake permissions are declared
+ * - Patches expo-audio for timeline duration, play/pause, and next/previous lock-screen controls
  * - Prevents Windows Ninja 260-char MAX_PATH failures via short staging dir & CMAKE_OBJECT_PATH_MAX
  */
 module.exports = function withFTuneAndroid(config) {
+  patchExpoAudio();
+
   config = AndroidConfig.Permissions.withPermissions(config, [
     "android.permission.INTERNET",
     "android.permission.ACCESS_NETWORK_STATE",
     "android.permission.ACCESS_WIFI_STATE",
     "android.permission.WAKE_LOCK",
+    "android.permission.POST_NOTIFICATIONS",
   ]);
 
   config = withAndroidManifest(config, (cfg) => {

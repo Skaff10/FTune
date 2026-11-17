@@ -208,6 +208,8 @@ function MainContent() {
   const pendingSwitchToPcRef = useRef(false);
   const pcHandoffPendingRef = useRef(false);
   const onTrackEndedHandlerRef = useRef<() => void>(() => {});
+  const onNextTrackHandlerRef = useRef<() => void>(() => {});
+  const onPrevTrackHandlerRef = useRef<() => void>(() => {});
 
   const updatePhoneState = (
     updater:
@@ -269,8 +271,8 @@ function MainContent() {
   ) => {
     const token = ++phoneOpTokenRef.current;
 
-    // Immediately stop previous phone playback so audio never overlaps or leaks
-    nativeAudio.stop();
+    // Pause previous playback immediately without destroying the media notification session
+    nativeAudio.prepareForTrack(track);
 
     updatePhoneState((prev) => ({
       ...prev,
@@ -303,7 +305,11 @@ function MainContent() {
     );
 
     if (token !== phoneOpTokenRef.current || playbackTargetRef.current !== "phone") {
-      nativeAudio.stop();
+      if (playbackTargetRef.current !== "phone") {
+        nativeAudio.stop();
+      } else {
+        nativeAudio.pause();
+      }
       return;
     }
 
@@ -375,6 +381,14 @@ function MainContent() {
       onTrackEndedHandlerRef.current();
     };
 
+    nativeAudio.onNextTrack = () => {
+      onNextTrackHandlerRef.current();
+    };
+
+    nativeAudio.onPrevTrack = () => {
+      onPrevTrackHandlerRef.current();
+    };
+
     nativeAudio.onError = () => {
       if (playbackTargetRef.current === "phone") {
         updatePhoneState((prev) => ({ ...prev, playing: false }));
@@ -385,6 +399,8 @@ function MainContent() {
       nativeAudio.onStateChange = null;
       nativeAudio.onTimeUpdate = null;
       nativeAudio.onTrackEnded = null;
+      nativeAudio.onNextTrack = null;
+      nativeAudio.onPrevTrack = null;
       nativeAudio.onError = null;
     };
   }, []);
@@ -781,6 +797,14 @@ function MainContent() {
     }
   };
 
+  onNextTrackHandlerRef.current = () => {
+    handleNext();
+  };
+
+  onPrevTrackHandlerRef.current = () => {
+    handlePrev();
+  };
+
   const handleSeek = (position: number) => {
     if (playbackTargetRef.current === "pc" && connectedRef.current) {
       updatePcState((prev) => ({ ...prev, position }));
@@ -1122,7 +1146,6 @@ function MainContent() {
             {loading ? (
               <View style={styles.centerState}>
                 <ActivityIndicator size="large" color={Colors.inkHi} />
-                <Text style={styles.loadingText}>Searching YouTube Music...</Text>
               </View>
             ) : results.length > 0 ? (
               <FlatList

@@ -14,6 +14,7 @@ import { mergeOfflineFavorites } from "./favorites";
 const STORAGE_KEYS = {
   STATUS: "ftune_spotify_status",
   TOKEN: "ftune_spotify_token",
+  TOKEN_EXPIRES: "ftune_spotify_token_expires",
   PLAYLISTS: "ftune_spotify_playlists",
   BORROWED: "ftune_borrowed_playlists",
   CATALOG: "ftune_spotify_song_catalog",
@@ -242,6 +243,8 @@ function parsePathfinderSong(data: any, uri: any, fallbackThumb?: string): Impor
 class SpotifyMobileService {
   private status: SpotifyStatus = { connected: false };
   private token: string | null = null;
+  private tokenExpiresAt = 0;
+  private refreshPromise: Promise<string | null> | null = null;
   private playlists: SpotifyPlaylistInfo[] = [];
   private borrowedPlaylists: PCPlaylist[] = [];
   private songCatalog: Record<string, ImportSong> = {};
@@ -274,6 +277,7 @@ class SpotifyMobileService {
       const [
         savedStatus,
         savedToken,
+        savedTokenExpires,
         savedPlaylists,
         savedBorrowed,
         savedCatalog,
@@ -281,6 +285,7 @@ class SpotifyMobileService {
       ] = await Promise.all([
         AsyncStorage.getItem(STORAGE_KEYS.STATUS),
         AsyncStorage.getItem(STORAGE_KEYS.TOKEN),
+        AsyncStorage.getItem(STORAGE_KEYS.TOKEN_EXPIRES),
         AsyncStorage.getItem(STORAGE_KEYS.PLAYLISTS),
         AsyncStorage.getItem(STORAGE_KEYS.BORROWED),
         AsyncStorage.getItem(STORAGE_KEYS.CATALOG),
@@ -289,6 +294,7 @@ class SpotifyMobileService {
 
       if (savedStatus) this.status = JSON.parse(savedStatus);
       if (savedToken) this.token = savedToken;
+      if (savedTokenExpires) this.tokenExpiresAt = Number(savedTokenExpires) || 0;
       if (savedPlaylists) this.playlists = JSON.parse(savedPlaylists);
       if (savedBorrowed) this.borrowedPlaylists = JSON.parse(savedBorrowed);
       if (savedCatalog) this.songCatalog = JSON.parse(savedCatalog);
@@ -372,6 +378,88 @@ class SpotifyMobileService {
   }
 
   /**
+   * Attempt to refresh the user's Spotify web-player token using shared WebView cookies (`sp_dc`)
+   */
+  public async tryRefreshTokenFromCookies(): Promise<string | null> {
+    if (this.refreshPromise) return this.refreshPromise;
+
+    this.refreshPromise = (async () => {
+      const fetchWithSecret = async (
+        reason: "init" | "transport",
+        ver: number,
+        secret: string
+      ) => {
+        const totp = generateSpotifyTotp(secret, Date.now());
+        const url = `${WEB_BASE}/api/token?reason=${reason}&productType=web-player&totp=${totp}&totpServer=${totp}&totpVer=${ver}`;
+        const res = await fetch(url, {
+          credentials: "include",
+          headers: {
+            Accept: "application/json",
+            Origin: WEB_BASE,
+            Referer: `${WEB_BASE}/`,
+            "User-Agent": DESKTOP_UA,
+          },
+        });
+        if (!res.ok) return null;
+        const data = await res.json().catch(() => null);
+        if (data?.accessToken && data?.isAnonymous === false) {
+          return data;
+        }
+        return null;
+      };
+
+      try {
+        let data = await fetchWithSecret(
+          "transport",
+          this.playerSecret.version,
+          this.playerSecret.secret
+        );
+        if (!data) {
+          const meta = await this.refreshWebPlayerMetadata();
+          data = await fetchWithSecret("init", meta.version, meta.secret);
+        }
+        if (data?.accessToken) {
+          const nextToken = String(data.accessToken);
+          this.token = nextToken;
+          this.tokenExpiresAt =
+            typeof data.accessTokenExpirationTimestampMs === "number" &&
+            data.accessTokenExpirationTimestampMs > Date.now()
+              ? data.accessTokenExpirationTimestampMs
+              : Date.now() + 50 * 60_000;
+          await AsyncStorage.setItem(STORAGE_KEYS.TOKEN, nextToken);
+          await AsyncStorage.setItem(
+            STORAGE_KEYS.TOKEN_EXPIRES,
+            String(this.tokenExpiresAt)
+          );
+          return nextToken;
+        }
+      } catch (e) {
+        console.warn("[spotify-mobile] cookie token refresh failed:", e);
+      }
+      return null;
+    })();
+
+    try {
+      return await this.refreshPromise;
+    } finally {
+      this.refreshPromise = null;
+    }
+  }
+
+  private async handleExpiredSession(): Promise<void> {
+    this.token = null;
+    this.tokenExpiresAt = 0;
+    this.status = {
+      connected: false,
+      problem: "Spotify session expired. Please sign in again.",
+    };
+    await AsyncStorage.removeItem(STORAGE_KEYS.TOKEN);
+    await AsyncStorage.removeItem(STORAGE_KEYS.TOKEN_EXPIRES);
+    await AsyncStorage.setItem(STORAGE_KEYS.STATUS, JSON.stringify(this.status));
+    this.notify();
+  }
+
+  /**
    * Execute a Spotify Web Player Pathfinder GraphQL query
    */
   private async queryPathfinder(
@@ -380,6 +468,16 @@ class SpotifyMobileService {
     tokenOverride?: string,
     retried = false
   ): Promise<any> {
+    if (
+      !tokenOverride &&
+      !retried &&
+      this.token &&
+      this.tokenExpiresAt > 0 &&
+      Date.now() >= this.tokenExpiresAt - 60_000
+    ) {
+      await this.tryRefreshTokenFromCookies();
+    }
+
     const authToken = tokenOverride || this.token;
     if (!authToken) throw new Error("Not signed in to Spotify");
 
@@ -405,6 +503,13 @@ class SpotifyMobileService {
     });
 
     if (res.status === 401) {
+      if (!tokenOverride && !retried) {
+        const refreshed = await this.tryRefreshTokenFromCookies();
+        if (refreshed) {
+          return this.queryPathfinder(op, variables, undefined, true);
+        }
+        await this.handleExpiredSession();
+      }
       throw new Error("Spotify session expired. Please sign in again.");
     }
 
@@ -426,8 +531,16 @@ class SpotifyMobileService {
   /**
    * Save successful in-app login from WebView session and load all playlists + Liked Songs
    */
-  public async setAuthSession(data: { token: string; name?: string }): Promise<SpotifyStatus> {
+  public async setAuthSession(data: {
+    token: string;
+    name?: string;
+    expiresAt?: number;
+  }): Promise<SpotifyStatus> {
     this.token = data.token;
+    this.tokenExpiresAt =
+      typeof data.expiresAt === "number" && data.expiresAt > Date.now()
+        ? data.expiresAt
+        : Date.now() + 50 * 60_000;
     let displayName = data.name || "";
 
     // Try fetching user profile display name via Pathfinder or Web API
@@ -451,6 +564,10 @@ class SpotifyMobileService {
       }
     }
 
+    if (!this.token) {
+      return this.status;
+    }
+
     this.status = {
       connected: true,
       name: displayName || "Spotify Listener",
@@ -458,6 +575,7 @@ class SpotifyMobileService {
     };
 
     await AsyncStorage.setItem(STORAGE_KEYS.TOKEN, this.token);
+    await AsyncStorage.setItem(STORAGE_KEYS.TOKEN_EXPIRES, String(this.tokenExpiresAt));
     await AsyncStorage.setItem(STORAGE_KEYS.STATUS, JSON.stringify(this.status));
 
     await this.refreshPlaylists();
@@ -470,10 +588,12 @@ class SpotifyMobileService {
    */
   public async disconnect(): Promise<void> {
     this.token = null;
+    this.tokenExpiresAt = 0;
     this.status = { connected: false };
     this.playlists = [];
 
     await AsyncStorage.removeItem(STORAGE_KEYS.TOKEN);
+    await AsyncStorage.removeItem(STORAGE_KEYS.TOKEN_EXPIRES);
     await AsyncStorage.removeItem(STORAGE_KEYS.STATUS);
     await AsyncStorage.removeItem(STORAGE_KEYS.PLAYLISTS);
 
@@ -488,6 +608,60 @@ class SpotifyMobileService {
   }
 
   /**
+   * Explicitly sync Spotify playlists from a connected FTune Desktop PC instance.
+   */
+  public async syncFromPC(): Promise<{
+    ok: boolean;
+    count: number;
+    message?: string;
+  }> {
+    if (!isServerConnected()) {
+      return {
+        ok: false,
+        count: 0,
+        message: "Not connected to FTune Desktop PC.",
+      };
+    }
+
+    try {
+      const pcUrl = getServerUrl();
+      const res = await fetch(`${pcUrl}/api/spotify/playlists`);
+      if (!res.ok) {
+        return {
+          ok: false,
+          count: 0,
+          message: `PC server returned status ${res.status}.`,
+        };
+      }
+      const data = await res.json();
+      if (Array.isArray(data.playlists) && data.playlists.length > 0) {
+        this.playlists = data.playlists;
+        this.status = {
+          connected: true,
+          name: this.status.name || "Synced from PC",
+          problem: undefined,
+        };
+        await AsyncStorage.setItem(STORAGE_KEYS.PLAYLISTS, JSON.stringify(this.playlists));
+        await AsyncStorage.setItem(STORAGE_KEYS.STATUS, JSON.stringify(this.status));
+        this.notify();
+        return { ok: true, count: this.playlists.length };
+      }
+
+      return {
+        ok: false,
+        count: 0,
+        message: "No Spotify playlists found on FTune PC. Sign in to Spotify on PC first.",
+      };
+    } catch (err: any) {
+      return {
+        ok: false,
+        count: 0,
+        message: err?.message || "Failed to reach FTune PC.",
+      };
+    }
+  }
+
+  /**
    * Refresh Spotify playlists & Liked Songs.
    * Uses Pathfinder libraryV3 + fetchLibraryTracks + Web API /v1/me/playlists fallback,
    * and also checks FTune PC if connected and no local token is present.
@@ -497,6 +671,7 @@ class SpotifyMobileService {
     if (this.token) {
       try {
         let likedCount = 0;
+        let anySuccess = false;
 
         // Get Liked Songs total count
         try {
@@ -506,7 +681,11 @@ class SpotifyMobileService {
           });
           likedCount =
             asNum(getAt(likedJson, "data", "me", "library", "tracks", "totalCount")) ?? 0;
+          anySuccess = true;
         } catch {
+          if (!this.token) {
+            return this.playlists;
+          }
           try {
             const r = await fetch("https://api.spotify.com/v1/me/tracks?limit=1", {
               headers: { Authorization: `Bearer ${this.token}` },
@@ -514,8 +693,19 @@ class SpotifyMobileService {
             if (r.ok) {
               const d = await r.json();
               likedCount = d?.total || 0;
+              anySuccess = true;
+            } else if (r.status === 401) {
+              const refreshed = await this.tryRefreshTokenFromCookies();
+              if (!refreshed) {
+                await this.handleExpiredSession();
+                return this.playlists;
+              }
             }
           } catch {}
+        }
+
+        if (!this.token) {
+          return this.playlists;
         }
 
         const lists: SpotifyPlaylistInfo[] = [
@@ -547,6 +737,7 @@ class SpotifyMobileService {
               includeFoldersWhenFlattening: false,
             });
 
+            anySuccess = true;
             const library = asObj(getAt(libJson, "data", "me", "libraryV3"));
             const items = asArr(library?.items);
             if (items.length === 0) break;
@@ -584,6 +775,9 @@ class SpotifyMobileService {
           }
         } catch (err) {
           console.warn("[spotify-mobile] libraryV3 fallback to Web API:", err);
+          if (!this.token) {
+            return this.playlists;
+          }
         }
 
         // Method B: Also check /v1/me/playlists for track totals or any additional playlists
@@ -595,6 +789,7 @@ class SpotifyMobileService {
             },
           });
           if (res.ok) {
+            anySuccess = true;
             const data = await res.json();
             for (const item of data?.items || []) {
               if (!item?.id || !item?.name) continue;
@@ -617,12 +812,17 @@ class SpotifyMobileService {
                 });
               }
             }
+          } else if (res.status === 401 && !anySuccess) {
+            await this.handleExpiredSession();
+            return this.playlists;
           }
         } catch {}
 
-        this.playlists = lists;
-        await AsyncStorage.setItem(STORAGE_KEYS.PLAYLISTS, JSON.stringify(this.playlists));
-        this.notify();
+        if (anySuccess) {
+          this.playlists = lists;
+          await AsyncStorage.setItem(STORAGE_KEYS.PLAYLISTS, JSON.stringify(this.playlists));
+          this.notify();
+        }
         return this.playlists;
       } catch (err: any) {
         console.warn("[spotify-mobile] refreshPlaylists error:", err);
@@ -630,24 +830,8 @@ class SpotifyMobileService {
     }
 
     // 2. Fallback: If connected to FTune Desktop PC, sync with PC's Spotify instance
-    if (isServerConnected()) {
-      try {
-        const pcUrl = getServerUrl();
-        const res = await fetch(`${pcUrl}/api/spotify/playlists`);
-        if (res.ok) {
-          const data = await res.json();
-          if (Array.isArray(data.playlists) && data.playlists.length > 0) {
-            this.playlists = data.playlists;
-            this.status = { connected: true, name: this.status.name || "Synced from PC" };
-            await AsyncStorage.setItem(STORAGE_KEYS.PLAYLISTS, JSON.stringify(this.playlists));
-            await AsyncStorage.setItem(STORAGE_KEYS.STATUS, JSON.stringify(this.status));
-            this.notify();
-            return this.playlists;
-          }
-        }
-      } catch (err) {
-        console.warn("[spotify-mobile] PC sync error:", err);
-      }
+    if (!this.token && isServerConnected()) {
+      await this.syncFromPC();
     }
 
     return this.playlists;
@@ -682,7 +866,7 @@ class SpotifyMobileService {
             );
             if (song) allSongs.push(song);
           }
-          if (allSongs.length >= total || items.length < 100) break;
+          if ((total > 0 && allSongs.length >= total) || items.length < 100) break;
         }
 
         if (allSongs.length > 0) {
@@ -698,79 +882,87 @@ class SpotifyMobileService {
         console.warn("[spotify-mobile] Pathfinder fetchLibraryTracks fallback to v1:", err);
       }
 
-      try {
-        const res = await fetch("https://api.spotify.com/v1/me/tracks?limit=50", {
-          headers: { Authorization: `Bearer ${this.token}` },
-        });
-        if (res.ok) {
-          const data = await res.json();
-          const songs: ImportSong[] = (data?.items || []).map((item: any) => {
-            const track = item.track;
-            return {
-              spotifyId: track?.id,
-              title: track?.name || "Unknown Track",
-              artist: (track?.artists || []).map((a: any) => a.name).join(", "),
-              album: track?.album?.name,
-              duration: Math.round((track?.duration_ms || 0) / 1000),
-              thumb: track?.album?.images?.[0]?.url || LIKED_SLEEVE,
-              explicit: track?.explicit,
-            };
+      if (this.token) {
+        try {
+          const res = await fetch("https://api.spotify.com/v1/me/tracks?limit=50", {
+            headers: { Authorization: `Bearer ${this.token}` },
           });
-          return {
-            name: "Liked Songs",
-            owner: this.status.name,
-            total: data?.total || songs.length,
-            thumb: LIKED_SLEEVE,
-            songs,
-          };
-        }
-      } catch (err) {
-        console.warn("[spotify-mobile] fetch liked tracks v1 error:", err);
-      }
-    }
-
-    // 2. Standalone user playlist via Pathfinder fetchPlaylist
-    if (this.token && id !== LIKED_ID) {
-      try {
-        const parsed = await this.readPlaylistViaPathfinder(id, this.token);
-        if (parsed.songs.length > 0) return parsed;
-      } catch (err) {
-        console.warn("[spotify-mobile] Pathfinder fetchPlaylist fallback:", err);
-      }
-
-      try {
-        const res = await fetch(`https://api.spotify.com/v1/playlists/${id}`, {
-          headers: { Authorization: `Bearer ${this.token}` },
-        });
-        if (res.ok) {
-          const data = await res.json();
-          const playlistThumb = data?.images?.[0]?.url || "";
-          const songs: ImportSong[] = (data?.tracks?.items || [])
-            .map((item: any) => {
-              const track = item.track || item;
-              if (!track?.name) return null;
+          if (res.ok) {
+            const data = await res.json();
+            const songs: ImportSong[] = (data?.items || []).map((item: any) => {
+              const track = item.track;
               return {
                 spotifyId: track?.id,
                 title: track?.name || "Unknown Track",
                 artist: (track?.artists || []).map((a: any) => a.name).join(", "),
                 album: track?.album?.name,
                 duration: Math.round((track?.duration_ms || 0) / 1000),
-                thumb: track?.album?.images?.[0]?.url || playlistThumb,
+                thumb: track?.album?.images?.[0]?.url || LIKED_SLEEVE,
                 explicit: track?.explicit,
               };
-            })
-            .filter(Boolean);
-          if (songs.length > 0) {
+            });
             return {
-              name: data?.name || "Spotify Playlist",
-              owner: data?.owner?.display_name,
-              total: data?.tracks?.total || songs.length,
-              thumb: playlistThumb,
+              name: "Liked Songs",
+              owner: this.status.name,
+              total: data?.total || songs.length,
+              thumb: LIKED_SLEEVE,
               songs,
             };
+          } else if (res.status === 401) {
+            await this.handleExpiredSession();
           }
+        } catch (err) {
+          console.warn("[spotify-mobile] fetch liked tracks v1 error:", err);
         }
-      } catch {}
+      }
+    }
+
+    // 2. Standalone user playlist via Pathfinder fetchPlaylist
+    if (this.token && id !== LIKED_ID) {
+      try {
+        const parsed = await this.readPlaylistViaPathfinder(id);
+        if (parsed.songs.length > 0) return parsed;
+      } catch (err) {
+        console.warn("[spotify-mobile] Pathfinder fetchPlaylist fallback:", err);
+      }
+
+      if (this.token) {
+        try {
+          const res = await fetch(`https://api.spotify.com/v1/playlists/${id}`, {
+            headers: { Authorization: `Bearer ${this.token}` },
+          });
+          if (res.ok) {
+            const data = await res.json();
+            const playlistThumb = data?.images?.[0]?.url || "";
+            const songs: ImportSong[] = (data?.tracks?.items || [])
+              .map((item: any) => {
+                const track = item.track || item;
+                if (!track?.name) return null;
+                return {
+                  spotifyId: track?.id,
+                  title: track?.name || "Unknown Track",
+                  artist: (track?.artists || []).map((a: any) => a.name).join(", "),
+                  album: track?.album?.name,
+                  duration: Math.round((track?.duration_ms || 0) / 1000),
+                  thumb: track?.album?.images?.[0]?.url || playlistThumb,
+                  explicit: track?.explicit,
+                };
+              })
+              .filter(Boolean);
+            if (songs.length > 0) {
+              return {
+                name: data?.name || "Spotify Playlist",
+                owner: data?.owner?.display_name,
+                total: data?.tracks?.total || songs.length,
+                thumb: playlistThumb,
+                songs,
+              };
+            }
+          } else if (res.status === 401) {
+            await this.handleExpiredSession();
+          }
+        } catch {}
+      }
     }
 
     // 3. Try fetching via PC server if connected
@@ -784,13 +976,21 @@ class SpotifyMobileService {
       } catch {}
     }
 
+    if (id === LIKED_ID) {
+      throw new Error(
+        this.token
+          ? "Could not load Liked Songs from Spotify. Try signing in again."
+          : "Please sign in to Spotify to load Liked Songs."
+      );
+    }
+
     // 4. Fallback: Read public embed page
     return this.fetchPublicPlaylist(`https://open.spotify.com/playlist/${id}`);
   }
 
   private async readPlaylistViaPathfinder(
     id: string,
-    token: string
+    token?: string
   ): Promise<ImportedPlaylist> {
     const allSongs: ImportSong[] = [];
     let name = "Spotify Playlist";
@@ -832,7 +1032,7 @@ class SpotifyMobileService {
         }
       }
 
-      if (allSongs.length >= total || items.length < 100) break;
+      if ((total > 0 && allSongs.length >= total) || items.length < 100) break;
     }
 
     return {

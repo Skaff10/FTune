@@ -94,7 +94,7 @@ export async function directYouTubeMusicSearch(
           const filtered = metaTexts.filter(
             (t: string) => t !== "Song" && t !== "Video" && t !== " • " && !/^\d+:\d+$/.test(t.trim())
           );
-          artist = filtered[0] || parentCardArtist || "YouTube Music";
+          artist = filtered[0] || parentCardArtist || "Unknown Artist";
         }
 
         // Duration parsing (find first MM:SS match)

@@ -22,17 +22,20 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
 }) => {
   const track = playerState.currentTrack;
 
+  const callbacksRef = useRef({ onPress, onNext, onPrev });
+  callbacksRef.current = { onPress, onNext, onPrev };
+
   const panResponder = useRef(
     PanResponder.create({
       onMoveShouldSetPanResponder: (_, gesture) =>
-        Math.abs(gesture.dx) > 15 || Math.abs(gesture.dy) > 15,
+        Math.abs(gesture.dx) > 20 || Math.abs(gesture.dy) > 20,
       onPanResponderRelease: (_, gesture) => {
         if (gesture.dy < -40 && Math.abs(gesture.dx) < 40) {
-          onPress();
+          callbacksRef.current.onPress();
         } else if (gesture.dx < -40 && Math.abs(gesture.dy) < 40) {
-          onNext();
+          callbacksRef.current.onNext();
         } else if (gesture.dx > 40 && Math.abs(gesture.dy) < 40) {
-          onPrev();
+          callbacksRef.current.onPrev();
         }
       },
     })
@@ -48,7 +51,7 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
 
   return (
     <View style={styles.outerWrapper} {...panResponder.panHandlers}>
-      <TouchableOpacity style={styles.card} activeOpacity={0.88} onPress={onPress}>
+      <View style={styles.card}>
         {track.thumb ? (
           <View pointerEvents="none" style={styles.cardGlowBackdrop}>
             <Image
@@ -65,41 +68,44 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
         </View>
 
         <View style={styles.container}>
-          <View style={styles.thumbWrapper}>
-            <Image
-              source={{
-                uri:
-                  track.thumb ||
-                  "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=120",
-              }}
-              style={styles.thumb}
-            />
-          </View>
+          <TouchableOpacity
+            style={styles.trackArea}
+            activeOpacity={0.78}
+            onPress={onPress}
+          >
+            <View style={styles.thumbWrapper}>
+              <Image
+                source={{
+                  uri:
+                    track.thumb ||
+                    "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=120",
+                }}
+                style={styles.thumb}
+              />
+            </View>
 
-          <View style={styles.infoWrapper}>
-            <View style={styles.titleRow}>
-              {playerState.playing && (
-                <View style={{ marginRight: 6 }}>
-                  <EqBars color={Colors.inkHi} size={11} animating={true} />
-                </View>
-              )}
-              <Text style={styles.title} numberOfLines={1}>
-                {track.title}
+            <View style={styles.infoWrapper}>
+              <View style={styles.titleRow}>
+                {playerState.playing && (
+                  <View style={{ marginRight: 6 }}>
+                    <EqBars color={Colors.inkHi} size={11} animating={true} />
+                  </View>
+                )}
+                <Text style={styles.title} numberOfLines={1}>
+                  {track.title}
+                </Text>
+              </View>
+              <Text style={styles.artist} numberOfLines={1}>
+                {track.artist}
               </Text>
             </View>
-            <Text style={styles.artist} numberOfLines={1}>
-              {track.artist}
-            </Text>
-          </View>
+          </TouchableOpacity>
 
           <View style={styles.controls}>
             <TouchableOpacity
               style={styles.button}
               activeOpacity={0.65}
-              onPress={(e) => {
-                e.stopPropagation();
-                onPrev();
-              }}
+              onPress={onPrev}
               hitSlop={{ top: 12, bottom: 12, left: 10, right: 10 }}
             >
               <SkipBack size={17} color={Colors.inkHi} fill={Colors.inkHi} />
@@ -108,10 +114,8 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
             <TouchableOpacity
               style={styles.playButton}
               activeOpacity={0.75}
-              onPress={(e) => {
-                e.stopPropagation();
-                onTogglePlay();
-              }}
+              onPress={onTogglePlay}
+              hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
             >
               {playerState.playing ? (
                 <Pause size={16} color="#000000" fill="#000000" />
@@ -128,17 +132,14 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
             <TouchableOpacity
               style={styles.button}
               activeOpacity={0.65}
-              onPress={(e) => {
-                e.stopPropagation();
-                onNext();
-              }}
+              onPress={onNext}
               hitSlop={{ top: 12, bottom: 12, left: 10, right: 10 }}
             >
               <SkipForward size={17} color={Colors.inkHi} fill={Colors.inkHi} />
             </TouchableOpacity>
           </View>
         </View>
-      </TouchableOpacity>
+      </View>
     </View>
   );
 };
@@ -186,6 +187,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingVertical: 8,
     paddingHorizontal: 12,
+  },
+  trackArea: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
   },
   thumbWrapper: {
     width: 42,

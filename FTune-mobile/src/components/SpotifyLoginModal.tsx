@@ -45,6 +45,14 @@ interface SpotifyLoginModalProps {
 const DESKTOP_CHROME_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
+function isSpotifyPostLoginUrl(url: string): boolean {
+  const lower = url.toLowerCase();
+  return (
+    /^https:\/\/open\.spotify\.com(?:[/?#]|$)/.test(lower) ||
+    /^https:\/\/accounts\.spotify\.com(?:\/[^?#]*)?\/status(?:[/?#]|$)/.test(lower)
+  );
+}
+
 /**
  * Runs before page scripts on open.spotify.com to intercept the Web Player's
  * own /api/token response or Pathfinder Authorization header immediately.
@@ -54,7 +62,7 @@ const BEFORE_LOAD_SCRIPT = `
     if (window.__ftuneHooked) return;
     window.__ftuneHooked = true;
 
-    function reportToken(token, name) {
+    function reportToken(token, name, expiresAt) {
       if (!token || typeof token !== 'string' || token.length < 20) return;
       if (window.__ftuneReportedToken === token) return;
       window.__ftuneReportedToken = token;
@@ -62,7 +70,8 @@ const BEFORE_LOAD_SCRIPT = `
         window.ReactNativeWebView.postMessage(JSON.stringify({
           type: 'spotify-success',
           token: token,
-          name: name || ''
+          name: name || '',
+          expiresAt: typeof expiresAt === 'number' ? expiresAt : undefined
         }));
       }
     }
@@ -72,9 +81,10 @@ const BEFORE_LOAD_SCRIPT = `
       window.fetch = function(input, init) {
         try {
           var url = typeof input === 'string' ? input : (input && input.url) || '';
-          if (init && init.headers) {
-            var auth = init.headers['Authorization'] || init.headers['authorization'] ||
-              (init.headers.get && (init.headers.get('Authorization') || init.headers.get('authorization')));
+          var headers = (init && init.headers) || (input && typeof input === 'object' && input.headers) || null;
+          if (headers) {
+            var auth = headers['Authorization'] || headers['authorization'] ||
+              (headers.get && (headers.get('Authorization') || headers.get('authorization')));
             if (auth && typeof auth === 'string' && auth.indexOf('Bearer ') === 0 && url.indexOf('spotify.com') !== -1) {
               var bearer = auth.slice(7).trim();
               if (bearer.length > 30 && window.__ftuneIsSignedIn) {
@@ -91,7 +101,7 @@ const BEFORE_LOAD_SCRIPT = `
               response.clone().json().then(function(data) {
                 if (data && data.accessToken && data.isAnonymous === false) {
                   window.__ftuneIsSignedIn = true;
-                  reportToken(data.accessToken, '');
+                  reportToken(data.accessToken, '', data.accessTokenExpirationTimestampMs);
                 }
               }).catch(function(){});
             }
@@ -181,14 +191,23 @@ const INJECTED_AUTH_SCRIPT = `
     var currentSecret = ',7/*F("rLJ2oxaKL^f+E1xvP@N';
     var currentVer = 61;
     var checking = false;
+    var anonCount = 0;
 
-    function sendSuccess(token, name) {
+    function unescapeJs(s) {
+      return s.replace(/\\\\(\\\\|["']|x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4})/g, function(_, esc) {
+        if (esc === '\\\\' || esc === '"' || esc === "'") return esc;
+        return String.fromCharCode(parseInt(esc.slice(1), 16));
+      });
+    }
+
+    function sendSuccess(token, name, expiresAt) {
       if (!token || window.__ftuneReportedToken === token) return;
       window.__ftuneReportedToken = token;
       window.ReactNativeWebView.postMessage(JSON.stringify({
         type: 'spotify-success',
         token: token,
-        name: name || ''
+        name: name || '',
+        expiresAt: typeof expiresAt === 'number' ? expiresAt : undefined
       }));
     }
 
@@ -213,7 +232,8 @@ const INJECTED_AUTH_SCRIPT = `
         .then(function(r) { return r.json(); })
         .then(function(data) {
           if (data && data.accessToken && data.isAnonymous === false) {
-            sendSuccess(data.accessToken, '');
+            anonCount = 0;
+            sendSuccess(data.accessToken, '', data.accessTokenExpirationTimestampMs);
           } else if (data && data.totpVerExpired) {
             // Scrape updated secret from web-player bundle if Spotify rotated version
             var html = document.documentElement ? document.documentElement.innerHTML : '';
@@ -228,9 +248,14 @@ const INJECTED_AUTH_SCRIPT = `
                 }
                 if (bestVer > 0 && bestSec) {
                   currentVer = bestVer;
-                  currentSecret = bestSec;
+                  currentSecret = unescapeJs(bestSec);
                 }
               });
+            }
+          } else if (data && data.isAnonymous) {
+            anonCount++;
+            if (anonCount === 4 && window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+              window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'spotify-anonymous' }));
             }
           }
         })
@@ -279,40 +304,114 @@ export const SpotifyLoginModal: React.FC<SpotifyLoginModalProps> = ({
 
   const webViewRef = useRef<any>(null);
   const handledTokenRef = useRef<string | null>(null);
+  const extractTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearExtractTimer = () => {
+    if (extractTimerRef.current) {
+      clearTimeout(extractTimerRef.current);
+      extractTimerRef.current = null;
+    }
+  };
+
+  const startExtractSession = () => {
+    setExtractingSession(true);
+    clearExtractTimer();
+    extractTimerRef.current = setTimeout(() => {
+      extractTimerRef.current = null;
+      handledTokenRef.current = null;
+      setExtractingSession(false);
+    }, 15000);
+  };
 
   useEffect(() => {
-    if (visible) {
-      setActiveTab(initialTab);
-      const st = spotifyService.getStatus();
-      const lists = spotifyService.getPlaylists();
-      setIsConnected(st.connected);
-      setAccountName(st.name || "Spotify Listener");
-      setAvailablePlaylists(lists);
-      setShowSignInWebView(!st.connected);
+    if (!visible) {
+      clearExtractTimer();
       setExtractingSession(false);
-      handledTokenRef.current = null;
-
-      // Pre-select all playlists by default if none are borrowed yet
-      if (lists.length > 0 && selectedIds.size === 0) {
-        setSelectedIds(new Set(lists.map((p) => p.id)));
-      }
+      return;
     }
+
+    let cancelled = false;
+    setActiveTab(initialTab);
+    const st = spotifyService.getStatus();
+    const lists = spotifyService.getPlaylists();
+    setIsConnected(st.connected);
+    setAccountName(st.name || "Spotify Listener");
+    setAvailablePlaylists(lists);
+    setShowSignInWebView(!st.connected);
+    setLoadingWeb(!st.connected);
+    setExtractingSession(false);
+    clearExtractTimer();
+    handledTokenRef.current = null;
+
+    if (lists.length > 0 && selectedIds.size === 0) {
+      setSelectedIds(new Set(lists.map((p) => p.id)));
+    }
+
+    if (st.connected) {
+      setRefreshingList(true);
+      spotifyService
+        .refreshPlaylists()
+        .then((freshLists) => {
+          if (cancelled) return;
+          const nextStatus = spotifyService.getStatus();
+          setIsConnected(nextStatus.connected);
+          setAccountName(nextStatus.name || "Spotify Listener");
+          setAvailablePlaylists(freshLists);
+          if (!nextStatus.connected) {
+            setShowSignInWebView(true);
+            setLoadingWeb(true);
+          } else if (freshLists.length > 0) {
+            setSelectedIds((prev) =>
+              prev.size > 0 ? prev : new Set(freshLists.map((p) => p.id))
+            );
+          }
+        })
+        .catch(() => {})
+        .finally(() => {
+          if (!cancelled) setRefreshingList(false);
+        });
+    }
+
+    return () => {
+      cancelled = true;
+      clearExtractTimer();
+    };
   }, [visible, initialTab]);
 
   const handleWebViewMessage = async (event: any) => {
     try {
       const data = JSON.parse(event.nativeEvent.data);
+      if (data?.type === "spotify-anonymous") {
+        clearExtractTimer();
+        setExtractingSession(false);
+        handledTokenRef.current = null;
+        return;
+      }
+
       if (data?.type === "spotify-success" && data.token) {
         if (handledTokenRef.current === data.token) return;
         handledTokenRef.current = data.token;
-        setExtractingSession(true);
+        startExtractSession();
 
         const status = await spotifyService.setAuthSession({
           token: data.token,
           name: data.name,
+          expiresAt: data.expiresAt,
         });
-        const lists = spotifyService.getPlaylists();
+        clearExtractTimer();
 
+        if (!status.connected) {
+          handledTokenRef.current = null;
+          setExtractingSession(false);
+          setShowSignInWebView(true);
+          Alert.alert(
+            "Spotify Sign-In",
+            status.problem || "Could not verify Spotify session. Please try again."
+          );
+          return;
+        }
+
+        const lists = spotifyService.getPlaylists();
         setIsConnected(status.connected);
         setAccountName(status.name || "Spotify Listener");
         setAvailablePlaylists(lists);
@@ -321,9 +420,15 @@ export const SpotifyLoginModal: React.FC<SpotifyLoginModalProps> = ({
         setExtractingSession(false);
         setShowSignInWebView(false);
       }
-    } catch (e) {
+    } catch (e: any) {
       console.warn("[spotify-login] message error:", e);
+      clearExtractTimer();
+      handledTokenRef.current = null;
       setExtractingSession(false);
+      Alert.alert(
+        "Spotify Sign-In Error",
+        e?.message || "Failed to connect your Spotify account."
+      );
     }
   };
 
@@ -331,11 +436,11 @@ export const SpotifyLoginModal: React.FC<SpotifyLoginModalProps> = ({
     const url = navState?.url || "";
     // The instant Spotify redirects from accounts.spotify.com to open.spotify.com (or /status),
     // hide the raw webpage so it never acts like a normal browser opening spotify.com!
-    if (
-      url.includes("open.spotify.com") ||
-      (url.includes("accounts.spotify.com") && url.includes("/status"))
-    ) {
-      setExtractingSession(true);
+    if (isSpotifyPostLoginUrl(url)) {
+      startExtractSession();
+    } else if (/^https:\/\/accounts\.spotify\.com(?:\/[^?#]*)?\/login(?:[/?#]|$)/i.test(url)) {
+      clearExtractTimer();
+      setExtractingSession(false);
     }
   };
 
@@ -361,8 +466,18 @@ export const SpotifyLoginModal: React.FC<SpotifyLoginModalProps> = ({
     setRefreshingList(true);
     try {
       const lists = await spotifyService.refreshPlaylists();
+      const st = spotifyService.getStatus();
+      setIsConnected(st.connected);
+      setAccountName(st.name || "Spotify Listener");
       setAvailablePlaylists(lists);
-      if (selectedIds.size === 0 && lists.length > 0) {
+      if (!st.connected) {
+        setShowSignInWebView(true);
+        setLoadingWeb(true);
+        Alert.alert(
+          "Session Expired",
+          st.problem || "Your Spotify session expired. Please sign in again."
+        );
+      } else if (selectedIds.size === 0 && lists.length > 0) {
         setSelectedIds(new Set(lists.map((p) => p.id)));
       }
     } catch (e) {
@@ -401,10 +516,13 @@ export const SpotifyLoginModal: React.FC<SpotifyLoginModalProps> = ({
   };
 
   const handleDisconnectAccount = async () => {
+    clearExtractTimer();
     await spotifyService.disconnect();
     setIsConnected(false);
     setAvailablePlaylists([]);
     setSelectedIds(new Set());
+    setLoadingWeb(true);
+    setExtractingSession(false);
     setShowSignInWebView(true);
     handledTokenRef.current = null;
   };
@@ -433,9 +551,12 @@ export const SpotifyLoginModal: React.FC<SpotifyLoginModalProps> = ({
   const handleSyncPC = async () => {
     setPcSyncing(true);
     try {
-      const playlists = await spotifyService.refreshPlaylists();
-      if (playlists.length > 0) {
-        setIsConnected(true);
+      const res = await spotifyService.syncFromPC();
+      if (res.ok) {
+        const st = spotifyService.getStatus();
+        const playlists = spotifyService.getPlaylists();
+        setIsConnected(st.connected);
+        setAccountName(st.name || "Synced from PC");
         setAvailablePlaylists(playlists);
         setSelectedIds(new Set(playlists.map((p) => p.id)));
         setShowSignInWebView(false);
@@ -443,7 +564,7 @@ export const SpotifyLoginModal: React.FC<SpotifyLoginModalProps> = ({
       } else {
         Alert.alert(
           "No Playlists Found",
-          "Make sure FTune Desktop on your PC is signed into Spotify, then try again."
+          res.message || "Make sure FTune Desktop on your PC is signed into Spotify, then try again."
         );
       }
     } catch (err: any) {
@@ -546,14 +667,20 @@ export const SpotifyLoginModal: React.FC<SpotifyLoginModalProps> = ({
                   onNavigationStateChange={handleNavigationChange}
                   onLoadStart={(e: any) => handleNavigationChange(e?.nativeEvent)}
                   onLoadEnd={() => setLoadingWeb(false)}
+                  onError={() => {
+                    clearExtractTimer();
+                    setLoadingWeb(false);
+                    setExtractingSession(false);
+                  }}
+                  onHttpError={() => setLoadingWeb(false)}
                   onShouldStartLoadWithRequest={(req: any) => {
                     const url = req?.url || "";
                     // Prevent OS from hijacking spotify:// or intent:// links to external browser/app
                     if (!url.startsWith("https://") && !url.startsWith("http://") && !url.startsWith("about:")) {
                       return false;
                     }
-                    if (url.includes("open.spotify.com")) {
-                      setExtractingSession(true);
+                    if (isSpotifyPostLoginUrl(url)) {
+                      startExtractSession();
                     }
                     return true;
                   }}
